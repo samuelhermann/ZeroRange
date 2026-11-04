@@ -12,6 +12,8 @@ import logging
 import json
 import os
 
+from app.core.lcd_charset import CUSTOM_GLYPHS, to_lcd
+
 logger = logging.getLogger(__name__)
 
 # Shared state files for web sync
@@ -92,6 +94,13 @@ class LCDManager:
             # Set backlight to white
             self.lcd.color = [100, 100, 100]
 
+            # Register custom glyphs (checkmark, arrows) missing from the ROM
+            for slot, pattern in CUSTOM_GLYPHS.values():
+                try:
+                    self.lcd.create_char(slot, pattern)
+                except Exception as e:
+                    logger.debug(f"create_char({slot}) failed: {e}")
+
             logger.info("Adafruit RGB LCD initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize display: {e}")
@@ -126,7 +135,7 @@ class LCDManager:
 
             # Write text (truncate if too long)
             max_length = self.width - x
-            text_to_write = text[:max_length]
+            text_to_write = to_lcd(text)[:max_length]
 
             self.lcd.message = text_to_write
 
@@ -149,9 +158,10 @@ class LCDManager:
             self._lines[line] = formatted_text
             self._sync_state_to_file()
 
-        # Write entire line at once (faster and more reliable over I2C)
+        # Write entire line at once (faster and more reliable over I2C).
+        # The web mirror keeps Unicode; the controller gets its own charset.
         self.lcd.cursor_position(0, line)
-        self.lcd.message = formatted_text
+        self.lcd.message = to_lcd(text).ljust(self.width)[:self.width]
 
     def read_buttons(self):
         """

@@ -1,186 +1,113 @@
-"""Stage 3 — Top Up the Balance.
+"""Stage 3 — Top Up the Balance (value-block forgery, 10 pts).
 
-Learner presents a forged MIFARE Classic 1K badge (magic card or Flipper
-emulation) with a valid value block at block 40 whose decoded value
-is >= the configured threshold (default 5000 cents = 50,00 EUR).
-
-PM3 reads block 40 and validates the value block structure.
+The learner presents a forged MIFARE Classic 1K badge (magic card or Flipper
+emulation) whose value block (block 40 by default) is structurally valid and
+decodes to at least the configured threshold (default 5000 cents = 50,00 EUR).
 """
 
-import time
 import logging
-from typing import Optional
+from typing import Optional, Tuple
 
-from challenges.coffee.value_block import validate, decode, ValueBlockError
+from app.core.ui import eur
+from app.scenarios.base import Stage
+from challenges.coffee import DEFAULT_KEY_B
+from challenges.coffee.value_block import ValueBlockError, decode, validate
 
 logger = logging.getLogger(__name__)
 
-_KEY_B = "B4EEC0FFEE11"
-_VALUE_BLOCK_ADDR = 40
-_BREWMASTER_TAG = b"BREW"
+DEFAULT_THRESHOLD = 5000
+DEFAULT_BLOCK = 40
 
 
-class Stage3:
-    """Credit top-up / value-block forgery challenge."""
+class Stage3(Stage):
+    challenge_id = 18
+    number = 3
+    title = "Stage3:Refill"
+    name = "Top Up Balance"
+    description = "Forge value block >=50 EUR"
+    requires = "proxmark"
+    config_keys = ("master_key_b_hex", "credit_threshold_cents", "value_block_addr")
 
-    def __init__(self, lcd, db, config: dict, proxmark, sse_emit=None):
-        self.lcd = lcd
-        self.db = db
-        self.cfg = config
-        self.pm3 = proxmark
-        self.sse = sse_emit or (lambda _: None)
+    @classmethod
+    def defaults(cls):
+        return {"master_key_b_hex": DEFAULT_KEY_B,
+                "credit_threshold_cents": DEFAULT_THRESHOLD,
+                "value_block_addr": DEFAULT_BLOCK}
 
     # ------------------------------------------------------------------ helpers
 
-    def _challenge_id(self) -> int:
-        return 18
+    def threshold(self) -> int:
+        return int(self.cfg_get("credit_threshold_cents", DEFAULT_THRESHOLD))
 
-    def _already_complete(self) -> bool:
-        status = self.db.get_challenge_status(self._challenge_id())
-        return status is not None and status["completed"]
+    def block_addr(self) -> int:
+        return int(self.cfg_get("value_block_addr", DEFAULT_BLOCK))
 
-    def _award(self, time_taken: int) -> None:
-        self.db.add_history(self._challenge_id(), True, time_taken)
-        self.db.mark_completed(self._challenge_id(), time_taken)
-        self.sse({"stage": 3, "status": "success", "points": 10})
-
-    def _threshold(self) -> int:
-        return int(self.cfg.get("credit_threshold_cents", 5000))
-
-    def _read_block40(self) -> Optional[bytes]:
-        """Read block 40 with Key B. Returns 16 raw bytes or None."""
-        key_b = self.cfg.get("master_key_b_hex", _KEY_B)
-        addr = int(self.cfg.get("value_block_addr", _VALUE_BLOCK_ADDR))
+    def read_value_block(self) -> Tuple[Optional[bytes], str]:
+        """Return ``(raw16, "")`` or ``(None, reason)``."""
+        key = bytes.fromhex(self.cfg_hex("master_key_b_hex", DEFAULT_KEY_B))
         try:
-            return self.pm3.read_block(addr, bytes.fromhex(key_b), "B")
+            return self.hw.read_block(self.block_addr(), key, "B"), ""
         except Exception as exc:
-            logger.warning(f"PM3 read_block error: {exc}")
-            return None
+            logger.warning("PM3 read_block error: %s", exc)
+            return None, "auth_failed" if "Auth" in type(exc).__name__ else "read_failed"
 
-    def _check_sanity(self) -> bool:
-        """Quick check: is block 1 tagged with BREWMASTERPRO?"""
-        try:
-            data = self.pm3.read_block(1, bytes.fromhex("FFFFFFFFFFFF"), "A")
-            return data is not None and data[:4] == _BREWMASTER_TAG
-        except Exception:
-            return True  # Don't hard-block on this sanity check
+    @staticmethod
+    def lcd_reason(error: ValueBlockError) -> str:
+        reason = str(error)
+        if "Bad ~V" in reason:
+            return "Bad ~V"
+        if "Bad addr" in reason:
+            return "Bad addr"
+        return reason[:14]
 
-    # ------------------------------------------------------------------ public
+    # ------------------------------------------------------------------ flow
 
     def run(self) -> int:
-        """Run Stage 3. Returns points earned (10 or 0)."""
-        logger.info("Coffee Stage 3: Top-up starting")
-
-        if self._already_complete():
-            self.lcd.clear()
-            self.lcd.write_line(0, "Stage 3 done!")
-            self.lcd.write_line(1, "Already solved ✓")
-            time.sleep(2)
+        if self.already_complete():
+            self.show_already_solved()
             return 0
 
-        if self.pm3 is None or self.pm3.simulation_mode:
-            self.lcd.clear()
-            self.lcd.write_line(0, "Proxmark3 needed")
-            self.lcd.write_line(1, "Not detected!")
-            time.sleep(3)
+        if not self.require_hardware("Proxmark3 needed", "Not detected! ◄"):
             return 0
 
-        threshold = self._threshold()
-        threshold_eur = f"{threshold // 100},{threshold % 100:02d}"
-
-        self.lcd.clear()
-        self.lcd.write_line(0, "Coffee Stage 3")
-        self.lcd.write_line(1, "Refill your card")
-        time.sleep(2)
-
-        self.lcd.clear()
-        self.lcd.write_line(0, f"Need >={threshold_eur} EUR")
-        self.lcd.write_line(1, "Present to PM3")
-        time.sleep(2)
-
-        start_time = time.time()
+        threshold = self.threshold()
+        self.ui.show("Coffee Stage 3", "Refill your card", hold=2)
+        self.ui.show(f"Need >={eur(threshold)} EUR", "Present to PM3", hold=2)
+        self.start_timer()
 
         while True:
-            self.lcd.clear()
-            self.lcd.write_line(0, "Hold card to PM3")
-            self.lcd.write_line(1, "SEL=Read ◄=Back")
+            if not self.ui.confirm("Hold card to PM3", "SEL=Read ◄=Back"):
+                return 0
 
-            # Wait for SELECT or BACK
-            while True:
-                if self.lcd.button_pressed(1):
-                    self.lcd.wait_button_release(1)
-                    break
-                if self.lcd.button_pressed(5):
-                    self.lcd.wait_button_release(5)
-                    return 0
-                time.sleep(0.1)
-
-            self.lcd.clear()
-            self.lcd.write_line(0, "Reading block 40")
-            self.lcd.write_line(1, "Please wait...")
-
-            raw = self._read_block40()
-
+            self.ui.show(f"Reading block {self.block_addr()}", "Please wait...")
+            raw, error = self.read_value_block()
             if raw is None:
-                self.lcd.clear()
-                self.lcd.write_line(0, "Auth failed!")
-                self.lcd.write_line(1, "Need Key B badge")
-                self.sse({"event": "credit_observed", "value_cents": None, "error": "auth_failed"})
-                time.sleep(3)
+                if error == "auth_failed":
+                    self.ui.show("Auth failed!", "Need Key B badge")
+                else:
+                    self.ui.show("Read failed!", "Hold card still")
+                self.emit(event="credit_observed", value_cents=None, error=error)
+                self.ui.sleep(3)
                 continue
 
-            # Validate structure
             try:
                 validate(raw)
             except ValueBlockError as exc:
-                reason = str(exc)
-                # Map to short LCD reason
-                if "Bad ~V" in reason:
-                    lcd_reason = "Bad ~V"
-                elif "Bad addr" in reason:
-                    lcd_reason = "Bad addr"
-                else:
-                    lcd_reason = reason[:14]
-                self.lcd.clear()
-                self.lcd.write_line(0, "Invalid block!")
-                self.lcd.write_line(1, lcd_reason)
-                logger.info(f"Stage 3 invalid block: {reason} | raw={raw.hex()}")
-                self.sse({"event": "credit_observed", "value_cents": None, "error": lcd_reason})
-                time.sleep(3)
+                reason = self.lcd_reason(exc)
+                logger.info("Stage 3 invalid block: %s | raw=%s", exc, raw.hex())
+                self.emit(event="credit_observed", value_cents=None, error=reason)
+                self.ui.show("Invalid block!", reason, hold=3)
                 continue
 
             value = decode(raw)
-            logger.info(f"Stage 3 block 40 value={value} cents (threshold={threshold})")
-            self.sse({"event": "credit_observed", "value_cents": value})
+            logger.info("Stage 3 value=%s cents (threshold=%s)", value, threshold)
+            self.emit(event="credit_observed", value_cents=value)
 
             if value < threshold:
-                value_eur = f"{value // 100},{value % 100:02d}"
-                self.lcd.clear()
-                self.lcd.write_line(0, "Value too low!")
-                self.lcd.write_line(1, f"{value_eur} EUR < {threshold_eur}")
-                time.sleep(3)
+                self.ui.show("Value too low!", f"{eur(value)} < {eur(threshold)}", hold=3)
                 continue
 
-            # Success!
-            elapsed = int(time.time() - start_time)
-            value_eur = f"{value // 100},{value % 100:02d}"
-            self._award(elapsed)
-            logger.info(f"Stage 3 completed in {elapsed}s, value={value} cents")
-
-            self.lcd.clear()
-            self.lcd.write_line(0, "TOPPED UP! +10pt")
-            self.lcd.write_line(1, f"{value_eur} EUR OK!")
-            time.sleep(3)
-
-            self.lcd.clear()
-            self.lcd.write_line(0, "COFFEE MODULE")
-            self.lcd.write_line(1, "COMPLETE! 30/30!")
-            time.sleep(4)
-
-            self.lcd.clear()
-            self.lcd.write_line(0, "Congratulations!")
-            self.lcd.write_line(1, "◄=Back to menu")
-            while not self.lcd.button_pressed(5):
-                time.sleep(0.1)
-            self.lcd.wait_button_release(5)
-            return 10
+            points = self.award()
+            self.ui.show("TOPPED UP! +10pt", f"{eur(value)} EUR OK!", hold=3)
+            self.finish("Congratulations!")
+            return points

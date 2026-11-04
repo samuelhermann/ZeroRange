@@ -1,294 +1,181 @@
-"""Stage 1 — Rolling-Code Teardown (10 pts = 3 + 7).
+"""Stage 1 — Rolling-Code Teardown (10 pts, awarded once both parts are done).
 
-Sub-stage 1a (3 pts):
-  ZeroRange TXes press N.  Receiver internally advances to N+1.
-  ZeroRange submits a replay of press N → receiver rejects it.
-  LCD shows "Replay rejected".  Learner presses SELECT to confirm → +3 pts.
+Part 1a — replay fails:
+  ZeroRange TXes press N, the receiver accepts it and moves on. A replay of
+  press N is then rejected (stale counter). The learner confirms with SELECT.
 
-Sub-stage 1b (7 pts, RollJam demo):
-  Receiver is set to "jammed" (won't advance).
-  ZeroRange TXes press N+1, then N+2 (learner can capture both with Flipper).
-  Jamming lifted.  ZeroRange submits press N+1 → receiver accepts → "Gate OPEN" → +7 pts.
+Part 1b — RollJam:
+  The receiver is "jammed". ZeroRange TXes press N+1 and N+2 (the learner can
+  capture both with a Flipper). Jamming is lifted, press N+1 is replayed and
+  accepted -> "Gate OPEN" -> stage solved.
+
+The scores DB has no partial credit, so points are only persisted after 1b.
 """
 
-import time
 import logging
+import os
+import tempfile
 
-from challenges.garage.rolling_scheme import encode_frame
+from app.scenarios.base import Stage
 from challenges.garage.receiver_state import ReceiverState
+from challenges.garage.rolling_scheme import encode_frame, frame_to_ook_timings
 
 logger = logging.getLogger(__name__)
 
+_SAMPLE_RATE = 2_000_000
 
-class Stage1:
-    _CHALLENGE_ID_1A = 19
-    _CHALLENGE_ID_1B = None  # 1a and 1b share challenge 19; sub-pts handled internally
-    _CHALLENGE_ID = 19
 
-    def __init__(self, lcd, db, config: dict, hackrf, sse_emit=None):
-        self.lcd = lcd
-        self.db = db
-        self.cfg = config
-        self.hackrf = hackrf
-        self.sse = sse_emit or (lambda _: None)
+def _parse_hex(value: str, default: str) -> bytes:
+    return bytes.fromhex((value or default).replace(" ", ""))
 
-        rolling = config.get("rolling", {})
-        self._device_id = bytes.fromhex(
-            rolling.get("device_id_hex", "DEADBEEF").replace(" ", "")
-        )
-        self._seed = bytes.fromhex(
-            rolling.get("seed_hex", "C0FFEE11").replace(" ", "")
-        )
-        self._freq = rolling.get("freq_hz", 433_920_000)
-        self._press_gap_ms = rolling.get("press_gap_ms", 1500)
-        self._window = rolling.get("counter_window", 16)
-        self._initial_counter = rolling.get("initial_counter", 100)
 
-    # ------------------------------------------------------------------ helpers
+class Stage1(Stage):
+    challenge_id = 19
+    number = 1
+    title = "Stage1:RollJam"
+    name = "Rolling Code"
+    description = "RollJam garage remote"
+    requires = "hackrf"
+    config_keys = ("rolling.device_id_hex", "rolling.seed_hex")
 
-    def _challenge_done(self) -> bool:
-        status = self.db.get_challenge_status(self._CHALLENGE_ID)
-        return status is not None and status["completed"]
+    @classmethod
+    def defaults(cls):
+        return {"rolling.device_id_hex": "DEADBEEF", "rolling.seed_hex": "C0FFEE11"}
 
-    def _award(self, pts: int, elapsed: int) -> None:
-        self.db.add_history(self._CHALLENGE_ID, True, elapsed)
-        self.db.mark_completed(self._CHALLENGE_ID, elapsed)
-        self.sse({"stage": 1, "status": "success", "points": pts})
-        self.sse({"event": "stage_complete", "stage": 1, "points": pts})
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        rolling = self.cfg.get("rolling", {})
+        self._device_id = _parse_hex(rolling.get("device_id_hex"), "DEADBEEF")
+        self._seed = _parse_hex(rolling.get("seed_hex"), "C0FFEE11")
+        self._freq = int(rolling.get("freq_hz", 433_920_000))
+        self._gap = int(rolling.get("press_gap_ms", 1500)) / 1000
+        self._window = int(rolling.get("counter_window", 16))
+        self._initial_counter = int(rolling.get("initial_counter", 100))
+
+    # ------------------------------------------------------------------ radio
+
+    def _frame(self, counter: int) -> bytes:
+        return encode_frame(self._device_id, counter, self._seed)
 
     def _tx_frame(self, counter: int, label: str) -> bool:
-        """TX one OOK frame via HackRF (or simulate). Returns success."""
-        frame = encode_frame(self._device_id, counter, self._seed)
-        self.lcd.clear()
-        self.lcd.write_line(0, f"Emitting {label}")
-        self.lcd.write_line(1, f"ctr={counter}")
-        self.sse({"event": "press_emitted", "counter": counter})
+        """TX one OOK frame via the HackRF (or simulate it). Returns success."""
+        self.ui.show(f"Emitting {label}", f"ctr={counter}")
+        self.emit(event="press_emitted", counter=counter)
 
-        if self.hackrf is None or self.hackrf.simulation_mode:
-            logger.info(f"[SIM] TX press counter={counter}")
-            time.sleep(0.5)
+        if getattr(self.hw, "simulation_mode", False):
+            logger.info("[SIM] TX press counter=%s", counter)
+            self.ui.sleep(0.5)
             return True
 
-        # Write frame to temp .raw for hackrf_transfer TX
-        import tempfile, struct, os
-        from challenges.garage.rolling_scheme import frame_to_ook_timings
-        timings = frame_to_ook_timings(frame)
-        # Convert µs timings to IQ bytes (crude OOK: ON=127+127j, OFF=0)
-        sr = 2_000_000
-        iq_bytes = bytearray()
-        for t in timings:
-            n_samples = abs(t) * sr // 1_000_000
-            if t > 0:
-                iq_bytes += bytes([127, 127]) * max(1, n_samples)
-            else:
-                iq_bytes += bytes([0, 0]) * max(1, n_samples)
+        # Crude OOK -> 8-bit IQ: ON = 127+127j, OFF = 0
+        iq = bytearray()
+        for t in frame_to_ook_timings(self._frame(counter)):
+            n = max(1, abs(t) * _SAMPLE_RATE // 1_000_000)
+            iq += (b"\x7f\x7f" if t > 0 else b"\x00\x00") * n
 
         with tempfile.NamedTemporaryFile(suffix=".raw", delete=False) as tf:
-            tf.write(iq_bytes)
-            tmp_path = tf.name
+            tf.write(iq)
+            path = tf.name
         try:
-            ok = self.hackrf.replay_signal(tmp_path, frequency=self._freq)
+            return bool(self.hw.replay_signal(path, frequency=self._freq))
         finally:
-            os.unlink(tmp_path)
-        return ok
+            os.unlink(path)
 
-    def _await_select_or_back(self, prompt0: str, prompt1: str) -> bool:
-        """Show a two-line prompt; return True on SELECT, False on BACK."""
-        self.lcd.clear()
-        self.lcd.write_line(0, prompt0)
-        self.lcd.write_line(1, prompt1)
-        while True:
-            if self.lcd.button_pressed(1):
-                self.lcd.wait_button_release(1)
-                return True
-            if self.lcd.button_pressed(5):
-                self.lcd.wait_button_release(5)
-                return False
-            time.sleep(0.1)
+    # ------------------------------------------------------------------ parts
 
-    # ------------------------------------------------------------------ sub-stages
-
-    def _run_1a(self, receiver: ReceiverState, start_time: float) -> int:
-        """Sub-stage 1a: fixed-code replay demo. Returns 0 or 3."""
+    def _run_1a(self, receiver: ReceiverState) -> bool:
         press_n = self._initial_counter
+        self.ui.show("Stage 1a: Replay", "Watching...", hold=1)
 
-        # TX press N — receiver internally NOT advancing (we control it)
-        self.lcd.clear()
-        self.lcd.write_line(0, "Stage 1a: Replay")
-        self.lcd.write_line(1, "Watching...")
-        time.sleep(1)
+        if not self._tx_frame(press_n, "press N"):
+            if not self.ui.confirm("HackRF TX fail!", "SEL=Skip ◄=Back"):
+                return False
+        self.ui.sleep(self._gap)
 
-        ok = self._tx_frame(press_n, "press N")
-        if not ok:
-            self.lcd.clear()
-            self.lcd.write_line(0, "HackRF TX fail!")
-            self.lcd.write_line(1, "SEL=Skip ◄=Back")
-            if not self._await_select_or_back("HackRF TX fail!", "SEL=Skip ◄=Back"):
-                return 0
-        time.sleep(self._press_gap_ms / 1000)
+        accepted, reason = receiver.submit_frame(self._frame(press_n))
+        if not accepted:
+            logger.error("Fresh receiver rejected press N (%s) - check rolling config", reason)
+            self.ui.notice("Receiver error", f"{reason} ◄")
+            return False
 
-        # The receiver saw press N and advanced
-        accepted, reason = receiver.submit_frame(
-            encode_frame(self._device_id, press_n, self._seed)
-        )
-        assert accepted, "First press should be accepted by fresh receiver"
-
-        # Now replay press N — it is stale
-        self.lcd.clear()
-        self.lcd.write_line(0, "Replaying press N")
-        self.lcd.write_line(1, "Will it work?...")
-        time.sleep(1)
+        self.ui.show("Replay press N", "Will it work?...", hold=1)
         self._tx_frame(press_n, "REPLAY N")
-        time.sleep(0.5)
-
-        accepted2, reason2 = receiver.submit_frame(
-            encode_frame(self._device_id, press_n, self._seed)
-        )
-        # Should be rejected (stale)
-        self.lcd.clear()
-        if not accepted2:
-            self.lcd.write_line(0, "Replay rejected")
-            self.lcd.write_line(1, "Try harder ◄=Bk")
+        self.ui.sleep(0.5)
+        replay_ok, _ = receiver.submit_frame(self._frame(press_n))
+        if replay_ok:
+            self.ui.show("Accepted! (bug?)", "", hold=2)
         else:
-            self.lcd.write_line(0, "Accepted! (bug?)")
-            self.lcd.write_line(1, "SEL=Continue")
+            self.ui.show("Replay rejected", "Counter moved on", hold=2)
 
-        time.sleep(2)
+        if not self.ui.confirm("Got REJECTED?", "SEL=Yes ◄=Back"):
+            return False
 
-        confirmed = self._await_select_or_back(
-            "Got REJECTED?",
-            "SEL=Yes ◄=Back"
-        )
-        if not confirmed:
-            return 0
+        # Web-only progress marker: no DB write (no partial credit).
+        self.emit(event="substage_complete", stage="1a", points=3)
+        self.ui.show("Rolling code!", "1a OK, next: 1b", hold=2)
+        return True
 
-        pts = 3
-        elapsed = int(time.time() - start_time)
-        self.db.add_history(self._CHALLENGE_ID, True, elapsed)
-        self.sse({"event": "stage_complete", "stage": "1a", "points": pts})
-
-        self.lcd.clear()
-        self.lcd.write_line(0, "Rolling code!")
-        self.lcd.write_line(1, f"+{pts}pts — next: RJ")
-        time.sleep(2)
-        return pts
-
-    def _run_1b(self, receiver: ReceiverState, start_time: float) -> int:
-        """Sub-stage 1b: RollJam demo. Returns 0 or 7."""
+    def _run_1b(self, receiver: ReceiverState) -> bool:
         press_n1 = self._initial_counter + 1
         press_n2 = self._initial_counter + 2
 
-        # Explain RollJam
-        for msg in ["RollJam principle:", "Jam+capture x2,", "replay 1st press"]:
-            self.lcd.clear()
-            self.lcd.write_line(0, "1b: RollJam")
-            self.lcd.write_line(1, msg[:16])
-            time.sleep(1.5)
+        self.ui.slides("1b: RollJam", ["RollJam principle", "Jam+capture x2,", "replay 1st press"])
 
-        # Enable jamming on the receiver
         receiver.set_jammed(True)
-        self.lcd.clear()
-        self.lcd.write_line(0, "JAMMING active")
-        self.lcd.write_line(1, "Capturing presses")
-        time.sleep(1)
+        self.ui.show("JAMMING active", "Capturing...", hold=1)
 
-        # TX press N+1 (receiver jammed, won't accept)
         self._tx_frame(press_n1, "press N+1")
-        self.sse({"event": "frame_held", "counter": press_n1, "tray_size": 1})
-        time.sleep(self._press_gap_ms / 1000)
+        self.emit(event="frame_held", counter=press_n1, tray_size=1)
+        self.ui.sleep(self._gap)
 
-        # TX press N+2 (still jammed)
         self._tx_frame(press_n2, "press N+2")
-        self.sse({"event": "frame_held", "counter": press_n2, "tray_size": 2})
-        time.sleep(self._press_gap_ms / 1000)
+        self.emit(event="frame_held", counter=press_n2, tray_size=2)
+        self.ui.sleep(self._gap)
 
-        # Lift jamming — receiver still at initial_counter (advanced by 1a)
         receiver.set_jammed(False)
-        self.lcd.clear()
-        self.lcd.write_line(0, "Jam lifted!")
-        self.lcd.write_line(1, "Replaying N+1...")
-        time.sleep(1)
+        self.ui.show("Jam lifted!", "Replaying N+1...", hold=1)
 
-        # Replay press N+1 — should be accepted
         self._tx_frame(press_n1, "REPLAY N+1")
-        time.sleep(0.5)
-        accepted, reason = receiver.submit_frame(
-            encode_frame(self._device_id, press_n1, self._seed)
-        )
+        self.ui.sleep(0.5)
+        accepted, reason = receiver.submit_frame(self._frame(press_n1))
+        if not accepted:
+            self.ui.show("Replay failed!", f"Reason: {reason}", hold=3)
+            return False
+        self.ui.show("Gate OPEN!", "RollJam success!", hold=3)
+        return True
 
-        if accepted:
-            self.lcd.clear()
-            self.lcd.write_line(0, "Gate OPEN! +7pts")
-            self.lcd.write_line(1, "RollJam success!")
-            time.sleep(3)
-            elapsed = int(time.time() - start_time)
-            self._award(10, elapsed)  # total 10 pts for stage 1 (3+7)
-            return 7
-        else:
-            self.lcd.clear()
-            self.lcd.write_line(0, "Replay failed!")
-            self.lcd.write_line(1, f"Reason: {reason[:10]}")
-            time.sleep(3)
-            return 0
-
-    # ------------------------------------------------------------------ public
+    # ------------------------------------------------------------------ flow
 
     def run(self) -> int:
-        logger.info("Garage Stage 1: Rolling-code teardown starting")
-
-        if self._challenge_done():
-            self.lcd.clear()
-            self.lcd.write_line(0, "Stage 1 done!")
-            self.lcd.write_line(1, "Already solved ◄")
-            while not self.lcd.button_pressed(5):
-                time.sleep(0.1)
-            self.lcd.wait_button_release(5)
+        if self.already_complete():
+            self.show_already_solved()
             return 0
 
-        # Splash
-        for line in ["RollJam demo", "Garage door", "433 MHz OOK"]:
-            self.lcd.clear()
-            self.lcd.write_line(0, "Garage Stage 1")
-            self.lcd.write_line(1, line)
-            time.sleep(1.2)
+        self.ui.slides("Garage Stage 1", ["RollJam demo", "Garage door", "433 MHz OOK"], hold=1.2)
 
-        # HackRF check
-        if self.hackrf is None:
-            self.lcd.clear()
-            self.lcd.write_line(0, "HackRF not found")
-            self.lcd.write_line(1, "Connect HackRF ◄")
-            while not self.lcd.button_pressed(5):
-                time.sleep(0.1)
-            self.lcd.wait_button_release(5)
+        if not self.require_hardware("HackRF not found", "Connect HackRF ◄", allow_simulation=True):
             return 0
 
-        start_time = time.time()
+        self.start_timer()
         receiver = ReceiverState(
             device_id=self._device_id,
             seed=self._seed,
             initial_counter=self._initial_counter - 1,
             window=self._window,
-            on_event=self.sse,
+            on_event=self.emit,
         )
 
-        total_pts = 0
-
-        pts_1a = self._run_1a(receiver, start_time)
-        if pts_1a == 0:
+        if not self._run_1a(receiver):
             return 0
-        total_pts += pts_1a
 
-        # Brief pause between sub-stages
-        if not self._await_select_or_back("Ready for 1b?", "SEL=Go ◄=Skip"):
-            return total_pts
+        if not self.ui.confirm("Ready for 1b?", "SEL=Go ◄=Later"):
+            self.ui.show("1b skipped", "Pts after 1b", hold=2)
+            return 0
 
-        pts_1b = self._run_1b(receiver, start_time)
-        total_pts += pts_1b
+        if not self._run_1b(receiver):
+            self.finish("Stage 1: retry 1b")
+            return 0
 
-        self.lcd.clear()
-        self.lcd.write_line(0, f"Stage 1: +{total_pts}pts")
-        self.lcd.write_line(1, "◄=Back to menu")
-        while not self.lcd.button_pressed(5):
-            time.sleep(0.1)
-        self.lcd.wait_button_release(5)
-        return total_pts
+        points = self.award()
+        self.finish(f"Stage 1: +{points}pts")
+        return points

@@ -1,5 +1,11 @@
 # ZeroRange Challenge Configuration Guide
 
+> **Status:** the `challenges/*.json` files and `challenge_loader.py` described
+> here are **not loaded by the running application** — editing them changes
+> nothing on the LCD. Classic module challenges are defined in `app/catalog.py`
+> and multi-stage scenarios in `challenges/<key>/scenario.py`.
+> **To create new content, follow [SCENARIO_GUIDE.md](SCENARIO_GUIDE.md).**
+
 This document describes how to create and customize challenges for ZeroRange modules.
 
 ## Overview

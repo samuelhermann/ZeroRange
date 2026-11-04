@@ -1,18 +1,37 @@
-"""ZeroRange web companion — Flask application factory."""
+"""ZeroRange web companion — Flask application factory.
+
+Scenario pages are generated from the scenario registry: dropping a new
+``challenges/<key>/scenario.py`` is enough to get ``/scenarios/<key>/``.
+A module ``app/web/routes/<key>.py`` may expose ``extend(bp)`` to add
+scenario-specific routes.
+"""
+
+import importlib
+import logging
 
 from flask import Flask
 
+from app.scenarios.registry import Registry, discover
+from app.web.scenario_blueprint import make_scenario_blueprint
 
-def create_app() -> Flask:
+logger = logging.getLogger(__name__)
+
+
+def create_app(registry: Registry = None, **blueprint_kwargs) -> Flask:
     app = Flask(__name__, template_folder="templates", static_folder="static")
+    registry = registry if registry is not None else discover()
+    app.config["ZR_REGISTRY"] = registry
 
-    from app.web.routes.coffee import coffee_bp
-    app.register_blueprint(coffee_bp, url_prefix="/scenarios/coffee")
-
-    from app.web.routes.garage import garage_bp
-    app.register_blueprint(garage_bp, url_prefix="/scenarios/garage")
+    for scenario in registry:
+        bp = make_scenario_blueprint(scenario, **blueprint_kwargs)
+        try:
+            extra = importlib.import_module(f"app.web.routes.{scenario.key}")
+        except ModuleNotFoundError:
+            extra = None
+        if extra is not None and hasattr(extra, "extend"):
+            extra.extend(bp)
+        app.register_blueprint(bp, url_prefix=f"/scenarios/{scenario.key}")
 
     from app.web.routes.index import index_bp
     app.register_blueprint(index_bp, url_prefix="/")
-
     return app

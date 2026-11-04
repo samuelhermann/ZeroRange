@@ -1,44 +1,42 @@
 """
 Database Manager for ZeroRange
-Handles SQLite persistence for challenges and score history
+Handles SQLite persistence for challenges and score history.
+
+The list of challenges is no longer hard-coded here: callers pass a catalog
+(see ``app.catalog.build_catalog``) and :meth:`Database.sync_catalog`
+inserts new challenges / refreshes names and points while preserving progress.
 """
 
-import sqlite3
 import logging
+import sqlite3
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+CatalogRow = Tuple[int, str, str, str, int]  # id, module, name, description, points
+
 
 class Database:
-    """Manages SQLite database for challenges and history"""
+    """Manages the SQLite database for challenges and history."""
 
-    def __init__(self, db_path="scores.db"):
-        """
-        Initialize database connection
-
-        Args:
-            db_path: Path to SQLite database file
-        """
-        self.db_path = db_path
+    def __init__(self, db_path: str = "scores.db",
+                 catalog: Optional[Iterable[CatalogRow]] = None):
+        self.db_path = str(db_path)
         try:
-            self.conn = sqlite3.connect(db_path)
-            self.conn.row_factory = sqlite3.Row  # Enable column access by name
-            logger.info(f"Connected to database: {db_path}")
+            self.conn = sqlite3.connect(self.db_path)
+            self.conn.row_factory = sqlite3.Row
+            logger.info(f"Connected to database: {self.db_path}")
             self._create_tables()
-            self.init_db()
+            if catalog is not None:
+                self.sync_catalog(catalog)
         except Exception as e:
             logger.error(f"Failed to initialize database: {e}")
             raise
 
     def _create_tables(self):
-        """Create database tables if they don't exist"""
-        try:
-            cursor = self.conn.cursor()
-
-            # Create challenges table
-            cursor.execute("""
+        with self.conn:
+            self.conn.execute("""
                 CREATE TABLE IF NOT EXISTS challenges (
                     id INTEGER PRIMARY KEY,
                     module TEXT NOT NULL,
@@ -49,9 +47,7 @@ class Database:
                     best_time INTEGER DEFAULT NULL
                 )
             """)
-
-            # Create history table
-            cursor.execute("""
+            self.conn.execute("""
                 CREATE TABLE IF NOT EXISTS history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp TEXT NOT NULL,
@@ -61,344 +57,175 @@ class Database:
                     FOREIGN KEY (challenge_id) REFERENCES challenges(id)
                 )
             """)
+        logger.debug("Database tables created/verified")
 
-            self.conn.commit()
-            logger.info("Database tables created/verified")
+    # ------------------------------------------------------------------ catalog
 
-        except Exception as e:
-            logger.error(f"Failed to create tables: {e}")
-            raise
+    def sync_catalog(self, catalog: Iterable[CatalogRow]) -> Dict[str, int]:
+        """Insert missing challenges and refresh metadata of existing ones.
 
-    def init_db(self):
-        """Initialize database with Phase 1 challenges if empty"""
-        try:
-            cursor = self.conn.cursor()
+        Progress (completed / best_time) is kept, except when an id now belongs
+        to a *different* module: that is a renumbering mistake and the old
+        progress would be credited to the wrong challenge, so it is reset.
 
-            # Check if challenges already exist
-            cursor.execute("SELECT COUNT(*) FROM challenges")
-            count = cursor.fetchone()[0]
+        Returns counters ``{"added": n, "updated": n, "reassigned": n}``.
+        """
+        stats = {"added": 0, "updated": 0, "reassigned": 0}
+        existing = {row["id"]: row for row in self.conn.execute(
+            "SELECT id, module, name, description, points FROM challenges")}
 
-            if count == 0:
-                # Insert all challenges: iButton, NFC, RFID, and SubGHZ
-                challenges = [
-                    # iButton challenges (1-3)
-                    (1, 'ibutton', 'Touch & Read', 'Detect any iButton', 10, 0, None),
-                    (2, 'ibutton', 'Clone iButton', 'Read then emulate', 10, 0, None),
-                    (3, 'ibutton', 'Emulate Specific', 'Create custom ID', 10, 0, None),
-                    # NFC challenges (4-6)
-                    (4, 'nfc', 'Detect & Read', 'Detect any NFC card', 10, 0, None),
-                    (5, 'nfc', 'Clone Card', 'Read and dump NFC', 10, 0, None),
-                    (6, 'nfc', 'MIFARE Attack', 'Break MIFARE Classic', 10, 0, None),
-                    # RFID 125kHz challenges (7-9)
-                    (7, 'rfid', 'Detect Tag', 'Detect RFID 125kHz', 10, 0, None),
-                    (8, 'rfid', 'Clone to T5577', 'Clone tag to T5577', 10, 0, None),
-                    (9, 'rfid', 'Simulate EM410x', 'Simulate EM410x tag', 10, 0, None),
-                    # SubGHZ challenges (10-12)
-                    (10, 'subghz', 'Detect Signal', 'Capture RF signal', 10, 0, None),
-                    (11, 'subghz', 'Record & Replay', 'Capture and replay', 10, 0, None),
-                    (12, 'subghz', 'Signal Analysis', 'Analyze RF protocol', 10, 0, None),
-                    # IR challenges (13-15)
-                    (13, 'ir', 'Detect IR', 'Detect any IR signal', 10, 0, None),
-                    (14, 'ir', 'Capture & Replay', 'Record and replay IR', 10, 0, None),
-                    (15, 'ir', 'Protocol Analysis', 'Identify IR protocol', 10, 0, None),
-                    # Coffee challenges (16-18)
-                    (16, 'coffee', 'Technician Token', 'Read maintenance iButton', 10, 0, None),
-                    (17, 'coffee', 'Crack & Dump', 'Dump badge via PM3 emulation', 10, 0, None),
-                    (18, 'coffee', 'Top Up Balance', 'Forge value block >=50 EUR', 10, 0, None),
-                    # Garage challenges (19-21)
-                    (19, 'garage', 'Rolling Code', 'RollJam garage remote', 10, 0, None),
-                    (20, 'garage', 'Pedestrian Gate', 'Clone iButton fob', 10, 0, None),
-                    (21, 'garage', 'Tech Room', 'Read MIFARE with leaked key', 10, 0, None),
-                ]
+        with self.conn:
+            for cid, module, name, description, points in catalog:
+                row = existing.get(cid)
+                if row is None:
+                    self.conn.execute(
+                        "INSERT INTO challenges (id, module, name, description, points, completed, best_time) "
+                        "VALUES (?, ?, ?, ?, ?, 0, NULL)",
+                        (cid, module, name, description, points))
+                    stats["added"] += 1
+                elif row["module"] != module:
+                    logger.warning(f"Challenge id {cid} moved from module '{row['module']}' "
+                                   f"to '{module}' - its progress is reset")
+                    self.conn.execute(
+                        "UPDATE challenges SET module=?, name=?, description=?, points=?, "
+                        "completed=0, best_time=NULL WHERE id=?",
+                        (module, name, description, points, cid))
+                    stats["reassigned"] += 1
+                elif (row["name"], row["description"], row["points"]) != (name, description, points):
+                    self.conn.execute(
+                        "UPDATE challenges SET name=?, description=?, points=? WHERE id=?",
+                        (name, description, points, cid))
+                    stats["updated"] += 1
 
-                cursor.executemany("""
-                    INSERT INTO challenges (id, module, name, description, points, completed, best_time)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, challenges)
+        if any(stats.values()):
+            logger.info(f"Catalog synced: {stats}")
+        return stats
 
-                self.conn.commit()
-                logger.info(f"Initialized {len(challenges)} challenges")
-            elif count < 21:
-                # Database exists but has fewer than 18 challenges - add missing ones
-                logger.info(f"Upgrading database from {count} to 18 challenges")
-
-                # Get existing challenge IDs
-                cursor.execute("SELECT id FROM challenges")
-                existing_ids = {row[0] for row in cursor.fetchall()}
-
-                # Define all 18 challenges
-                all_challenges = [
-                    (1, 'ibutton', 'Touch & Read', 'Detect any iButton', 10, 0, None),
-                    (2, 'ibutton', 'Clone iButton', 'Read then emulate', 10, 0, None),
-                    (3, 'ibutton', 'Emulate Specific', 'Create custom ID', 10, 0, None),
-                    (4, 'nfc', 'Detect & Read', 'Detect any NFC card', 10, 0, None),
-                    (5, 'nfc', 'Clone Card', 'Read and dump NFC', 10, 0, None),
-                    (6, 'nfc', 'MIFARE Attack', 'Break MIFARE Classic', 10, 0, None),
-                    (7, 'rfid', 'Detect Tag', 'Detect RFID 125kHz', 10, 0, None),
-                    (8, 'rfid', 'Clone to T5577', 'Clone tag to T5577', 10, 0, None),
-                    (9, 'rfid', 'Simulate EM410x', 'Simulate EM410x tag', 10, 0, None),
-                    (10, 'subghz', 'Detect Signal', 'Capture RF signal', 10, 0, None),
-                    (11, 'subghz', 'Record & Replay', 'Capture and replay', 10, 0, None),
-                    (12, 'subghz', 'Signal Analysis', 'Analyze RF protocol', 10, 0, None),
-                    (13, 'ir', 'Detect IR', 'Detect any IR signal', 10, 0, None),
-                    (14, 'ir', 'Capture & Replay', 'Record and replay IR', 10, 0, None),
-                    (15, 'ir', 'Protocol Analysis', 'Identify IR protocol', 10, 0, None),
-                    (16, 'coffee', 'Technician Token', 'Read maintenance iButton', 10, 0, None),
-                    (17, 'coffee', 'Crack & Dump', 'Dump badge via PM3 emulation', 10, 0, None),
-                    (18, 'coffee', 'Top Up Balance', 'Forge value block >=50 EUR', 10, 0, None),
-                    (19, 'garage', 'Rolling Code', 'RollJam garage remote', 10, 0, None),
-                    (20, 'garage', 'Pedestrian Gate', 'Clone iButton fob', 10, 0, None),
-                    (21, 'garage', 'Tech Room', 'Read MIFARE with leaked key', 10, 0, None),
-                ]
-
-                # Add only missing challenges
-                missing_challenges = [ch for ch in all_challenges if ch[0] not in existing_ids]
-
-                if missing_challenges:
-                    cursor.executemany("""
-                        INSERT INTO challenges (id, module, name, description, points, completed, best_time)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """, missing_challenges)
-                    self.conn.commit()
-                    logger.info(f"Added {len(missing_challenges)} new challenges")
-            else:
-                logger.info(f"Database already contains {count} challenges (max: 21)")
-
-        except Exception as e:
-            logger.error(f"Failed to initialize database: {e}")
-            raise
+    # ------------------------------------------------------------------ scores
 
     def get_total_score(self) -> int:
-        """
-        Get total score (sum of points from completed challenges)
-
-        Returns:
-            int: Total score
-        """
+        """Sum of points of completed challenges."""
         try:
-            cursor = self.conn.cursor()
-            cursor.execute("""
-                SELECT SUM(points) FROM challenges WHERE completed = 1
-            """)
-            result = cursor.fetchone()[0]
-            return result if result is not None else 0
-
+            row = self.conn.execute(
+                "SELECT COALESCE(SUM(points), 0) FROM challenges WHERE completed = 1").fetchone()
+            return int(row[0])
         except Exception as e:
             logger.error(f"Failed to get total score: {e}")
             return 0
 
-    def get_challenge_status(self, challenge_id: int) -> Optional[Dict]:
-        """
-        Get status of specific challenge
-
-        Args:
-            challenge_id: Challenge ID (1-3 for Phase 1)
-
-        Returns:
-            dict: {completed: bool, points: int, best_time: int|None}
-                  or None if not found
-        """
+    def get_max_score(self, module: Optional[str] = None) -> int:
+        """Total points available (optionally for one module)."""
         try:
-            cursor = self.conn.cursor()
-            cursor.execute("""
-                SELECT completed, points, best_time
-                FROM challenges
-                WHERE id = ?
-            """, (challenge_id,))
+            if module:
+                row = self.conn.execute(
+                    "SELECT COALESCE(SUM(points), 0) FROM challenges WHERE module = ?",
+                    (module,)).fetchone()
+            else:
+                row = self.conn.execute("SELECT COALESCE(SUM(points), 0) FROM challenges").fetchone()
+            return int(row[0])
+        except Exception as e:
+            logger.error(f"Failed to get max score: {e}")
+            return 0
 
-            row = cursor.fetchone()
+    def get_module_score(self, module: str) -> int:
+        try:
+            row = self.conn.execute(
+                "SELECT COALESCE(SUM(points), 0) FROM challenges WHERE completed = 1 AND module = ?",
+                (module,)).fetchone()
+            return int(row[0])
+        except Exception as e:
+            logger.error(f"Failed to get module score: {e}")
+            return 0
+
+    def get_challenge_status(self, challenge_id: int) -> Optional[Dict]:
+        """``{completed, points, best_time}`` or None if the id is unknown."""
+        try:
+            row = self.conn.execute(
+                "SELECT completed, points, best_time FROM challenges WHERE id = ?",
+                (challenge_id,)).fetchone()
             if row:
                 return {
                     'completed': bool(row['completed']),
                     'points': row['points'],
-                    'best_time': row['best_time']
+                    'best_time': row['best_time'],
                 }
             return None
-
         except Exception as e:
             logger.error(f"Failed to get challenge status: {e}")
             return None
 
     def get_all_challenges(self) -> List[Dict]:
-        """
-        Get all challenges with their status
-
-        Returns:
-            list: List of challenge dicts with all fields
-        """
         try:
-            cursor = self.conn.cursor()
-            cursor.execute("""
+            rows = self.conn.execute("""
                 SELECT id, module, name, description, points, completed, best_time
-                FROM challenges
-                ORDER BY id
-            """)
-
-            challenges = []
-            for row in cursor.fetchall():
-                challenges.append({
-                    'id': row['id'],
-                    'module': row['module'],
-                    'name': row['name'],
-                    'description': row['description'],
-                    'points': row['points'],
-                    'completed': bool(row['completed']),
-                    'best_time': row['best_time']
-                })
-
-            return challenges
-
+                FROM challenges ORDER BY id
+            """).fetchall()
+            return [dict(row, completed=bool(row['completed'])) for row in rows]
         except Exception as e:
             logger.error(f"Failed to get challenges: {e}")
             return []
 
     def mark_completed(self, challenge_id: int, time_taken: int):
-        """
-        Mark challenge as completed and update best time if applicable
-
-        Args:
-            challenge_id: Challenge ID
-            time_taken: Time taken in seconds
-        """
+        """Mark challenge as completed and keep the best time."""
         try:
-            cursor = self.conn.cursor()
-
-            # Get current best time
-            cursor.execute("""
-                SELECT best_time FROM challenges WHERE id = ?
-            """, (challenge_id,))
-
-            row = cursor.fetchone()
+            row = self.conn.execute(
+                "SELECT best_time FROM challenges WHERE id = ?", (challenge_id,)).fetchone()
             if row is None:
                 logger.warning(f"Challenge {challenge_id} not found")
                 return
-
-            current_best = row['best_time']
-
-            # Update best time if this is better (or first completion)
-            if current_best is None or time_taken < current_best:
-                cursor.execute("""
+            with self.conn:
+                self.conn.execute("""
                     UPDATE challenges
-                    SET completed = 1, best_time = ?
+                    SET completed = 1,
+                        best_time = CASE WHEN best_time IS NULL OR ? < best_time
+                                         THEN ? ELSE best_time END
                     WHERE id = ?
-                """, (time_taken, challenge_id))
-                logger.info(f"Challenge {challenge_id} completed in {time_taken}s (new best)")
-            else:
-                cursor.execute("""
-                    UPDATE challenges
-                    SET completed = 1
-                    WHERE id = ?
-                """, (challenge_id,))
-                logger.info(f"Challenge {challenge_id} completed in {time_taken}s")
-
-            self.conn.commit()
-
+                """, (time_taken, time_taken, challenge_id))
+            logger.info(f"Challenge {challenge_id} completed in {time_taken}s")
         except Exception as e:
             logger.error(f"Failed to mark challenge completed: {e}")
 
     def add_history(self, challenge_id: int, success: bool, time_taken: int):
-        """
-        Add attempt to history
-
-        Args:
-            challenge_id: Challenge ID
-            success: True if completed successfully
-            time_taken: Time taken in seconds
-        """
         try:
-            cursor = self.conn.cursor()
-
-            timestamp = datetime.now().isoformat()
-
-            cursor.execute("""
-                INSERT INTO history (timestamp, challenge_id, success, time_taken)
-                VALUES (?, ?, ?, ?)
-            """, (timestamp, challenge_id, success, time_taken))
-
-            self.conn.commit()
+            with self.conn:
+                self.conn.execute(
+                    "INSERT INTO history (timestamp, challenge_id, success, time_taken) VALUES (?, ?, ?, ?)",
+                    (datetime.now().isoformat(), challenge_id, bool(success), int(time_taken)))
             logger.info(f"Added history: Challenge {challenge_id}, success={success}, time={time_taken}s")
-
         except Exception as e:
             logger.error(f"Failed to add history: {e}")
 
     def get_stats(self) -> Dict:
-        """
-        Get overall statistics
-
-        Returns:
-            dict: {
-                total_score: int,
-                completed_count: int,
-                total_challenges: int,
-                total_attempts: int,
-                success_rate: float
-            }
-        """
+        """``{total_score, max_score, completed_count, total_challenges,
+        total_attempts, success_rate}``."""
         try:
-            cursor = self.conn.cursor()
-
-            # Get total score
-            total_score = self.get_total_score()
-
-            # Get completed count
-            cursor.execute("SELECT COUNT(*) FROM challenges WHERE completed = 1")
-            completed_count = cursor.fetchone()[0]
-
-            # Get total challenges
-            cursor.execute("SELECT COUNT(*) FROM challenges")
-            total_challenges = cursor.fetchone()[0]
-
-            # Get total attempts
-            cursor.execute("SELECT COUNT(*) FROM history")
-            total_attempts = cursor.fetchone()[0]
-
-            # Get success count
-            cursor.execute("SELECT COUNT(*) FROM history WHERE success = 1")
-            success_count = cursor.fetchone()[0]
-
-            # Calculate success rate
-            success_rate = (success_count / total_attempts * 100) if total_attempts > 0 else 0
-
+            q = lambda sql: self.conn.execute(sql).fetchone()[0]  # noqa: E731
+            total_attempts = q("SELECT COUNT(*) FROM history")
+            success_count = q("SELECT COUNT(*) FROM history WHERE success = 1")
             return {
-                'total_score': total_score,
-                'completed_count': completed_count,
-                'total_challenges': total_challenges,
+                'total_score': self.get_total_score(),
+                'max_score': self.get_max_score(),
+                'completed_count': q("SELECT COUNT(*) FROM challenges WHERE completed = 1"),
+                'total_challenges': q("SELECT COUNT(*) FROM challenges"),
                 'total_attempts': total_attempts,
-                'success_rate': success_rate
+                'success_rate': (success_count / total_attempts * 100) if total_attempts else 0,
             }
-
         except Exception as e:
             logger.error(f"Failed to get stats: {e}")
-            return {
-                'total_score': 0,
-                'completed_count': 0,
-                'total_challenges': 0,
-                'total_attempts': 0,
-                'success_rate': 0
-            }
+            return {'total_score': 0, 'max_score': 0, 'completed_count': 0,
+                    'total_challenges': 0, 'total_attempts': 0, 'success_rate': 0}
 
     def reset_scores(self):
-        """Reset all scores and clear history"""
+        """Reset all scores and clear history."""
         try:
-            cursor = self.conn.cursor()
-
-            # Reset challenges
-            cursor.execute("""
-                UPDATE challenges
-                SET completed = 0, best_time = NULL
-            """)
-
-            # Clear history
-            cursor.execute("DELETE FROM history")
-
-            self.conn.commit()
+            with self.conn:
+                self.conn.execute("UPDATE challenges SET completed = 0, best_time = NULL")
+                self.conn.execute("DELETE FROM history")
             logger.info("All scores reset and history cleared")
-
         except Exception as e:
             logger.error(f"Failed to reset scores: {e}")
 
     def close(self):
-        """Close database connection"""
         try:
             self.conn.close()
             logger.info("Database connection closed")
@@ -406,50 +233,16 @@ class Database:
             logger.error(f"Failed to close database: {e}")
 
 
-# Test code for standalone testing
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.DEBUG,
-        format='[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s'
-    )
+    logging.basicConfig(level=logging.INFO,
+                        format='[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s')
+    from app.catalog import build_catalog
+    from app.scenarios.registry import discover
 
-    print("Testing Database class...")
-
-    # Create test database
-    db = Database("test_scores.db")
-
-    # Display all challenges
-    print("\nAll challenges:")
-    challenges = db.get_all_challenges()
-    for ch in challenges:
-        print(f"  {ch['id']}: {ch['name']} - {ch['points']}pts - Completed: {ch['completed']}")
-
-    # Test adding history and marking completed
-    print("\nSimulating Challenge 1 success...")
+    db = Database(":memory:", catalog=build_catalog(discover().scenarios))
+    for ch in db.get_all_challenges():
+        print(f"  {ch['id']:>3} {ch['module']:<8} {ch['name']:<20} {ch['points']}pts")
     db.add_history(1, True, 45)
     db.mark_completed(1, 45)
-
-    print("\nSimulating Challenge 2 fail...")
-    db.add_history(2, False, 90)
-
-    print("\nSimulating Challenge 1 again (better time)...")
-    db.add_history(1, True, 30)
-    db.mark_completed(1, 30)
-
-    # Get stats
-    print("\nStatistics:")
-    stats = db.get_stats()
-    for key, value in stats.items():
-        print(f"  {key}: {value}")
-
-    print(f"\nTotal Score: {db.get_total_score()}/40")
-
-    # Get specific challenge status
-    print("\nChallenge 1 status:")
-    status = db.get_challenge_status(1)
-    if status:
-        print(f"  Completed: {status['completed']}")
-        print(f"  Best time: {status['best_time']}s")
-
+    print(db.get_stats())
     db.close()
-    print("\nDatabase test complete!")

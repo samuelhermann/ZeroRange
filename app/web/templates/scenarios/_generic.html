@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{ scenario.title }} | ZeroRange</title>
+<style>
+:root { --bg:#0e0e0e; --fg:#f4f1ec; --accent:#ff6a00; --green:#39d353; --red:#f85149; --dim:#777; }
+* { box-sizing:border-box; margin:0; padding:0; }
+body { background:var(--bg); color:var(--fg); font-family:monospace; min-height:100vh; padding:1.5rem; }
+header { margin-bottom:1.5rem; }
+header h1 { color:var(--accent); font-size:1.3rem; letter-spacing:.08em; }
+header p { font-size:.8rem; color:var(--dim); margin-top:.4rem; max-width:60ch; }
+.score { font-size:1.6rem; margin:1rem 0; font-variant-numeric:tabular-nums; }
+.stages { display:flex; flex-direction:column; gap:1rem; max-width:640px; }
+.stage { border:1px solid #333; border-radius:8px; padding:1rem; transition:border-color .3s; }
+.stage.active { border-color:var(--accent); }
+.stage.success { border-color:var(--green); }
+.stage h2 { font-size:.9rem; display:flex; justify-content:space-between; gap:1rem; }
+.stage p { font-size:.75rem; color:var(--dim); margin-top:.4rem; }
+.badge { font-size:.7rem; padding:.2rem .5rem; border-radius:3px; background:#1a1a1a; color:var(--dim); white-space:nowrap; }
+.stage.success .badge { color:var(--green); }
+.stage.active .badge { color:var(--accent); }
+.log { margin-top:1.5rem; max-width:640px; border-top:1px solid #222; padding-top:1rem; font-size:.7rem; color:var(--dim); }
+.log li { list-style:none; padding:.15rem 0; overflow-wrap:anywhere; }
+.banner { display:none; margin-top:1rem; color:var(--green); font-size:1.1rem; }
+.banner.show { display:block; }
+footer { margin-top:2rem; font-size:.7rem; color:var(--dim); }
+footer a { color:var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>{{ scenario.brand or scenario.title }}</h1>
+  {% if scenario.description %}<p>{{ scenario.description }}</p>{% endif %}
+</header>
+
+<div class="score" id="score">–/{{ scenario.max_points }} pts</div>
+
+<div class="stages">
+  {% for s in scenario.stages %}
+  <div class="stage" id="stage{{ s.number }}">
+    <h2><span>Stage {{ s.number }} — {{ s.name or s.title }}</span>
+        <span class="badge" id="badge{{ s.number }}">waiting</span></h2>
+    {% if s.description %}<p>{{ s.description }} · {{ s.points }} pts</p>{% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+<div class="banner" id="banner">Scenario complete!</div>
+
+<ul class="log" id="log"></ul>
+
+<footer>
+  {% for line in scenario.disclaimer %}{{ line }} {% endfor %}
+  <br><a href="/">← Back to scenarios</a>
+</footer>
+
+<script>
+const KEY = {{ scenario.key | tojson }};
+const MAX = {{ scenario.max_points }};
+
+function setStage(n, status) {
+  const el = document.getElementById('stage' + n);
+  const badge = document.getElementById('badge' + n);
+  if (!el) return;
+  if (status === 'active' && el.classList.contains('success')) return;
+  el.classList.remove('active', 'success');
+  if (status === 'success') { el.classList.add('success'); badge.textContent = '✓ done'; }
+  else if (status === 'active') { el.classList.add('active'); badge.textContent = 'active'; }
+  else { badge.textContent = 'waiting'; }
+}
+
+function refresh() {
+  fetch(`/scenarios/${KEY}/api/status`).then(r => r.json()).then(d => {
+    d.stages.forEach(s => { if (s.completed) setStage(s.number, 'success'); });
+    document.getElementById('score').textContent = `${d.score}/${MAX} pts`;
+    document.getElementById('banner').classList.toggle('show', d.score === MAX);
+  }).catch(() => {});
+}
+
+function log(data) {
+  const li = document.createElement('li');
+  const t = data.ts ? new Date(data.ts * 1000).toLocaleTimeString() : '';
+  const { ts, ...rest } = data;
+  li.textContent = `${t}  ${JSON.stringify(rest)}`;
+  const ul = document.getElementById('log');
+  ul.prepend(li);
+  while (ul.children.length > 30) ul.lastChild.remove();
+}
+
+const evtSource = new EventSource(`/scenarios/${KEY}/events`);
+evtSource.onmessage = (e) => {
+  let data;
+  try { data = JSON.parse(e.data); } catch { return; }
+  if (data.event === 'connected') { refresh(); return; }
+  log(data);
+  if (data.stage && data.status === 'success') { setStage(data.stage, 'success'); refresh(); }
+  else if (typeof data.stage === 'number') { setStage(data.stage, 'active'); }
+  if (data.event === 'scenario_complete' || data.event === 'session_start') refresh();
+};
+refresh();
+</script>
+</body>
+</html>

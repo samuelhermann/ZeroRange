@@ -11,7 +11,8 @@
 
 ## Overview
 
-The Garage module (`garage_handler.py`) chains three scored stages around a
+The Garage scenario (`challenges/garage/scenario.py`, run by the generic
+`app/scenarios/runner.py`) chains three scored stages around a
 fictional commercial garage.
 
 | Stage | Hardware | Topic | Points |
@@ -44,20 +45,24 @@ Navigate with **▲ UP / ▼ DOWN**, launch with **● SELECT**, return with **�
 
 ## Stage 1 — Rolling-Code Teardown (10 pts)
 
-### Sub-stage 1a (3 pts): Replay rejected
+The scores database has no partial credit: the 10 points are stored once **both**
+parts are done. 1a alone is shown as progress (`substage_complete` event) but
+leaving after 1a stores nothing.
+
+### Sub-stage 1a: Replay rejected
 
 1. ZeroRange TXes press N at 433.92 MHz OOK via HackRF.
 2. Receiver internally advances counter to N+1.
 3. ZeroRange replays press N against the receiver — it rejects it (stale counter).
-4. LCD: `"Replay rejected — try harder."`
-5. Learner presses **SELECT** to confirm they witnessed the rejection → **+3 pts**.
+4. LCD: `"Replay rejected / Counter moved on"`
+5. Learner presses **SELECT** to confirm they witnessed the rejection.
 
-### Sub-stage 1b (7 pts): RollJam
+### Sub-stage 1b: RollJam
 
 1. ZeroRange simulates jamming (receiver's `jammed` flag prevents advancement).
 2. ZeroRange TXes press N+1 — learner's Flipper can optionally capture it.
 3. ZeroRange TXes press N+2 (second captured frame).
-4. ZeroRange lifts jamming, then replays press N+1 → receiver accepts → **Gate OPEN → +7 pts**.
+4. ZeroRange lifts jamming, then replays press N+1 → receiver accepts → **Gate OPEN → +10 pts**.
 
 ### Toy rolling-code format
 
@@ -166,6 +171,7 @@ http://192.168.1.193:8080/scenarios/garage/
 | `{"event": "frame_held", "counter": N, "tray_size": 1\|2}` | Frame added to capture tray |
 | `{"event": "replay_received", "counter": N, "accepted": bool, "reason": "..."}` | Replay decoded and evaluated |
 | `{"event": "window_slid", "last_accepted": N, "window": 16}` | Receiver accepted and advanced |
+| `{"event": "substage_complete", "stage": "1a", "points": 3}` | 1a done (progress only, nothing stored) |
 | `{"event": "stage_complete", "stage": 1\|2\|3, "points": N}` | Stage credited |
 | `{"event": "key_leaked", "key_a_hex": "F15EC0DE0017"}` | Stage 2 Key A leak emitted |
 | `{"stage": N, "status": "success", "points": 10}` | Stage N completed (legacy form) |
@@ -250,7 +256,7 @@ EOF
   `"HackRF not found"` screen appears with a BACK option. TX-only during Stage 1
   — never TX and RX simultaneously.
 - **iButton HID reader:** same auto-detect as the Coffee module
-  (`_find_hid_device()` in `garage_handler.py`).
+  (`app/core/hid.py`; override with `settings.hid_device` in `config.json`).
 - **Proxmark3:** `/dev/ttyACM0` by default. Disconnecting surfaces a graceful
   error. Emulation is always stopped in a `finally` block on stage exit.
 - **Cleanup:** killing `zerorange.py` mid-Stage-1 stops any `hackrf_transfer`
@@ -262,10 +268,8 @@ EOF
 
 ```bash
 cd /home/sam/ZeroRange
-python3 -m unittest discover -s tests/garage -v
+python3 -m pytest tests/garage -v
 ```
-
-Expected: **60 tests, 0 failures**.
 
 ---
 
@@ -288,14 +292,14 @@ Before a session:
 
 ```
 ZeroRange/
-├── garage_handler.py
 ├── challenges/garage/
-│   ├── __init__.py
+│   ├── __init__.py                # Default key / badge path
+│   ├── scenario.py                # ScenarioDef: stages, disclaimer
 │   ├── rolling_scheme.py          # Frame encode/decode, .sub I/O
 │   ├── rolling_scheme.md          # Toy rolling-code spec
 │   ├── receiver_state.py          # Synthetic receiver state machine
 │   ├── ook_demod.py               # OOK demodulation (.sub and IQ)
-│   ├── nfc_to_pm3_eml.py          # Flipper .nfc v4 → PM3 .eml converter
+│   ├── nfc_to_pm3_eml.py          # alias of app/core/nfc_file.py
 │   ├── stage1_rolling.py          # Stage 1: RollJam demo
 │   ├── stage2_pedestrian.py       # Stage 2: iButton gate
 │   ├── stage3_tech_room.py        # Stage 3: MIFARE Classic
@@ -310,9 +314,9 @@ ZeroRange/
 │   ├── test_receiver_state.py
 │   ├── test_ook_demod.py
 │   ├── test_nfc_to_pm3_eml.py
-│   └── test_garage_handler.py
+│   └── test_garage_scenario.py
 ├── app/web/
-│   ├── routes/garage.py           # garage_bp blueprint + SSE + debug endpoint
+│   ├── routes/garage.py           # extend(bp): debug endpoint
 │   ├── templates/scenarios/garage.html
 │   └── static/scenarios/garage/
 │       ├── logo.svg

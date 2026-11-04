@@ -50,3 +50,7 @@ deploy_to_pi.sh
 # Local configuration
 *.local.json
 *.local.yaml
+
+# Runtime state (LCD mirror, web buttons, scenario event streams)
+run/
+config.local.json

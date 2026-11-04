@@ -49,7 +49,7 @@ class ReceiverState:
         self.last_accepted = initial_counter
         self.window = window
         self.jammed = False
-        self._emit = on_event or (lambda _: None)
+        self._emit = on_event if on_event is not None else (lambda _: None)
 
     # ------------------------------------------------------------------ public
 

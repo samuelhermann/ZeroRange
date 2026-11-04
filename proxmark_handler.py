@@ -342,7 +342,7 @@ class ProxmarkHandler:
         hf mf eload, then starts hf mf sim.  Returns an EmulationHandle
         whose stop() terminates the simulation and cleans up.
         """
-        from challenges.coffee.nfc_to_pm3_eml import parse_nfc, blocks_to_eml
+        from app.core.nfc_file import parse_nfc, blocks_to_eml
 
         blocks = parse_nfc(nfc_path)
         eml_text = blocks_to_eml(blocks)

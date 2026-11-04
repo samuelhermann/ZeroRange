@@ -9,7 +9,8 @@
 
 ## Overview
 
-The Coffee module (`coffee_handler.py`) chains three scored stages around a fictional
+The Coffee scenario (`challenges/coffee/scenario.py`, run by the generic
+`app/scenarios/runner.py`) chains three scored stages around a fictional
 "Sam BrewMaster Pro" coffee station, plus a **Prep Badges** tool for trainer setup.
 
 | Hardware | Purpose |
@@ -73,7 +74,7 @@ SEL=KeyB  ◄=Stop
 Press **● SELECT** at any time to toggle Key B visibility on the LCD:
 
 ```
-B4 EE C0 FF EE 11    ← key displayed so you can type it into Flipper
+B4EE C0FF EE11       ← key displayed so you can type it into Flipper
 SEL=Hide  ◄=Stop
 ```
 
@@ -96,13 +97,13 @@ Both are MIFARE Classic 1K, SAK `08`, ATQA `00 04`.
 2. On UID match: *Token OK! +10pts* → the LCD reveals the leaked Key B:
 
    ```
-   Leaked log:
-   KeyB=B4 EE C0 FF
+   Leaked log: KeyB
+   B4EE C0FF EE11
    Sectors 8-14:
-   B4 EE C0 FF EE 11
+   B4EE C0FF EE11
    ```
 
-3. Three consecutive wrong reads show "Check right token" before retrying.
+3. Three consecutive wrong reads show "Check the token" before retrying.
 4. Stage is idempotent — re-running a completed stage shows the leak screen again without re-awarding points.
 
 ---
@@ -205,7 +206,8 @@ manual refresh needed.
 
 - **iButton HID reader:** enumerates as `/dev/input/event*`. ZeroRange auto-detects
   the first device whose name contains "keyboard", "hid", or "ibutton". If
-  auto-detection fails, edit `_find_hid_device()` in `coffee_handler.py`.
+  auto-detection picks the wrong device, set `settings.hid_device` (e.g.
+  `"/dev/input/event1"`) in `config.json` or `config.local.json`.
 - **Proxmark3:** `/dev/ttyACM0` by default (set in `proxmark_handler.py`).
   Disconnecting it between stages surfaces a "Proxmark3 not detected" screen with
   a retry option — no traceback.
@@ -273,25 +275,26 @@ Before a session:
 
 ```
 ZeroRange/
-├── coffee_handler.py                  # Module entry point + HID adapter + menu
 ├── challenges/coffee/
-│   ├── __init__.py
+│   ├── __init__.py                    # Default UID / key / badge paths
+│   ├── scenario.py                    # ScenarioDef: stages, tool, disclaimer
 │   ├── prep_badges.py                 # Prep Badges tool (PM3 emulation, Key B reveal)
 │   ├── stage1_technician.py           # iButton UID match + Key B leak
 │   ├── stage2_dump.py                 # PM3 emulation + sector log monitoring
 │   ├── stage3_refill.py               # PM3 read-back + value-block validation
 │   ├── value_block.py                 # MIFARE value-block encode/decode/validate
-│   ├── nfc_to_pm3_eml.py              # Flipper .nfc v4 → PM3 .eml converter
+│   ├── nfc_to_pm3_eml.py              # alias of app/core/nfc_file.py
 │   └── badges/
 │       ├── credit_low.nfc             # 1,50 EUR reference badge
 │       └── credit_high.nfc            # 50,00 EUR reference badge
 ├── tests/coffee/
 │   ├── test_value_block.py
 │   ├── test_nfc_to_pm3_eml.py
-│   └── test_coffee_handler.py
+│   └── test_coffee_scenario.py
 ├── app/web/
 │   ├── wsgi.py                        # Flask entry point (port 8080)
-│   ├── routes/coffee.py               # Blueprint + SSE endpoint
+│   ├── scenario_blueprint.py          # Page + SSE + /api/status (all scenarios)
+│   ├── routes/coffee.py               # emit_event compat alias
 │   ├── templates/scenarios/coffee.html
 │   └── static/scenarios/coffee/
 │       ├── logo.svg

@@ -67,8 +67,20 @@ Navigate through challenges using the 5-button interface:
 | **RFID** | Detect, Clone, Simulate | 30 pts | Available |
 | **SubGHZ** | Detect Signal, Record & Replay, Signal Analysis | 30 pts | Available |
 | **Coffee** | Technician Token, Dump & Crack, Top Up | 30 pts | Available |
+| **Garage** | Rolling Code (RollJam), Pedestrian Gate, Tech Room | 30 pts | Available |
 
-**Total: 150 points** across 15 challenges
+**Total: 210 points** across 21 challenges (IR included)
+
+### Create your own scenario
+
+```bash
+python3 tools/new_scenario.py hotel --title Hotel \
+    --stage ibutton:"Lobby fob" --stage mifare:"Room card" --stage custom:"Minibar"
+python3 tools/validate_scenarios.py
+```
+
+The new scenario shows up in the LCD menu, the scores database and the web
+companion automatically. See **[docs/SCENARIO_GUIDE.md](docs/SCENARIO_GUIDE.md)**.
 
 ### Coming Soon
 
@@ -245,10 +257,19 @@ For detailed installation instructions, see [INSTALLATION.md](INSTALLATION.md).
 
 ```
 ZeroRange/
-├── zerorange.py          # Main application
+├── zerorange.py          # Main application (data-driven menus)
 ├── lcd_manager.py        # LCD display control
-├── database.py           # Score persistence
-├── config.json           # Configuration
+├── database.py           # Score persistence (catalog-synced)
+├── config.json           # Configuration (overridable by config.local.json)
+│
+├── app/
+│   ├── catalog.py        # Classic modules table (iButton, NFC, RFID, SubGHZ, IR)
+│   ├── core/             # LCD UI helpers, event bus, HID reader, NFC files, config
+│   ├── scenarios/        # Scenario framework: Stage, ScenarioDef, runner, registry, validator
+│   └── web/              # Flask web companion (one blueprint per scenario)
+├── challenges/<key>/     # One folder per scenario (coffee, garage, ...)
+├── tools/                # new_scenario.py, validate_scenarios.py
+├── tests/                # pytest suite (no hardware needed)
 │
 ├── ibutton_handler.py    # iButton challenge logic
 ├── nfc_handler.py        # NFC challenges (Proxmark3)
@@ -298,8 +319,14 @@ See [LICENSE](LICENSE) for details.
 Contributions welcome! Please:
 1. Fork the repository
 2. Create a feature branch
-3. Test on real hardware
-4. Submit a pull request
+3. Run the checks (no hardware needed):
+   ```bash
+   pip3 install -r requirements-dev.txt
+   python3 -m pytest
+   python3 tools/validate_scenarios.py
+   ```
+4. Test on real hardware
+5. Submit a pull request
 
 ---
 

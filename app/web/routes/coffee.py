@@ -1,83 +1,10 @@
-"""Coffee blueprint — serves the scenario view and SSE event stream."""
+"""Coffee web routes.
 
-import json
-import queue
-import threading
-import time
-from flask import Blueprint, Response, render_template, stream_with_context
+The page, SSE stream and status API come from app/web/scenario_blueprint.py.
+``emit_event`` is kept for backward compatibility with external scripts: it
+now publishes through the cross-process event bus.
+"""
 
-coffee_bp = Blueprint(
-    "coffee",
-    __name__,
-    static_folder="../static",
-    static_url_path="/static",
-    template_folder="../templates",
-)
+from app.core.events import EventBus
 
-# ---------------------------------------------------------------------------
-# SSE event bus (thread-safe queue per client)
-# ---------------------------------------------------------------------------
-
-_subscribers: list[queue.SimpleQueue] = []
-_subscribers_lock = threading.Lock()
-
-
-def emit_event(data: dict) -> None:
-    """Publish a state-change event to all connected SSE clients.
-
-    Called from the LCD main loop (or stage handlers) via the sse_emit callback.
-    """
-    payload = json.dumps(data)
-    with _subscribers_lock:
-        dead = []
-        for q in _subscribers:
-            try:
-                q.put_nowait(payload)
-            except Exception:
-                dead.append(q)
-        for q in dead:
-            _subscribers.remove(q)
-
-
-def _sse_generator():
-    """Yield SSE-formatted lines from the per-client queue."""
-    q: queue.SimpleQueue = queue.SimpleQueue()
-    with _subscribers_lock:
-        _subscribers.append(q)
-    try:
-        # Send an initial ping so the browser knows the stream is alive
-        yield "data: {\"event\":\"connected\"}\n\n"
-        while True:
-            try:
-                payload = q.get(timeout=25)
-                yield f"data: {payload}\n\n"
-            except queue.Empty:
-                yield ": keepalive\n\n"
-    finally:
-        with _subscribers_lock:
-            try:
-                _subscribers.remove(q)
-            except ValueError:
-                pass
-
-
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
-
-@coffee_bp.route("/")
-def coffee_index():
-    return render_template("scenarios/coffee.html")
-
-
-@coffee_bp.route("/events")
-def events():
-    """Server-Sent Events endpoint for live stage transitions."""
-    return Response(
-        stream_with_context(_sse_generator()),
-        mimetype="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
-    )
+emit_event = EventBus("coffee")
