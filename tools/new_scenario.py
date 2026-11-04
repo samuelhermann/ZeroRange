@@ -77,8 +77,10 @@ SCENARIO = ScenarioDef(
     stages=($stage_classes),
     complete_lines=("$complete_lcd", "COMPLETE!"),
     order=$order,
+    sequential=True,        # stage N unlocks when stage N-1 is solved
     # Config defaults; override them in config.json under "$key".
     defaults=$defaults,
+    # secrets=my_secrets,   # per-session random keys/UIDs: see docs/SCENARIO_GUIDE.md
 )
 ''')
 
@@ -94,6 +96,8 @@ class Stage$n(IButtonMatchStage):
     name = "$label"
     description = "TODO: one-line objective"
     points = $points
+
+    hints = ("TODO: first hint (costs 2 pts)", "TODO: second, more explicit hint")
 
     uid_key = "stage${n}_uid"    # set the real UID in config.json["$key"]
     intro = ("$short Stage $n", "TODO: pretext")
@@ -119,6 +123,8 @@ class Stage$n(MifareEmulationStage):
     description = "TODO: one-line objective"
     points = $points
 
+    hints = ("TODO: first hint (costs 2 pts)", "TODO: second, more explicit hint")
+
     badge_key = "stage${n}_badge"     # Flipper .nfc file emulated by the PM3
     key_key = "stage${n}_key_hex"     # key the learner must find / use
     key_type = "A"
@@ -142,7 +148,8 @@ class Stage$n(Stage):
     name = "$label"
     description = "TODO: one-line objective"
     points = $points
-    requires = None              # "hid" | "proxmark" | "hackrf" -> injected as self.hw
+    requires = None              # "hid" | "proxmark" | "hackrf" | "flirc" -> self.hw
+    hints = ("TODO: first hint (costs 2 pts)", "TODO: second, more explicit hint")
 
     def run(self) -> int:
         if self.already_complete():

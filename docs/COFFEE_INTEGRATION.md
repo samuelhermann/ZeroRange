@@ -40,6 +40,13 @@ Pressing SELECT launches the Coffee sub-menu with four items:
 ```
 
 Navigate with **▲ UP / ▼ DOWN**, launch with **● SELECT**, return to root menu with **◄ LEFT**.
+**► RIGHT** inside a stage shows hints (−2 pts each, at most half the stage).
+
+The scenario is **sequential**: Stage 2 unlocks after Stage 1, Stage 3 after
+Stage 2 (`"coffee": {"sequential": false}` in config.json to disable).
+A **new training session** (LCD Settings or trainer dashboard) generates a new
+Key B and rewrites both reference badges with it; the technician iButton, being
+a physical token, keeps its configured UID.
 
 ---
 

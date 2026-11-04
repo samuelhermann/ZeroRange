@@ -31,7 +31,7 @@ class ScenarioRunner:
         show_disclaimer: set False to skip the disclaimer slides (tests).
     """
 
-    def __init__(self, scenario: ScenarioDef, lcd, db, *, proxmark=None, hackrf=None,
+    def __init__(self, scenario: ScenarioDef, lcd, db, *, proxmark=None, hackrf=None, flirc=None,
                  sse_emit: Optional[Callable[[Dict[str, Any]], None]] = None,
                  config: Optional[Dict[str, Any]] = None,
                  hid_factory: Optional[Callable[[], Any]] = None,
@@ -40,14 +40,16 @@ class ScenarioRunner:
         self.show_disclaimer = show_disclaimer
         self.lcd = lcd
         self.db = db
-        self.devices: Dict[str, Any] = {"proxmark": proxmark, "hackrf": hackrf}
+        self.devices: Dict[str, Any] = {"proxmark": proxmark, "hackrf": hackrf, "flirc": flirc}
         self.sse = EventBus(scenario.key) if sse_emit is None else sse_emit
+        self._fixed_config = config
         self.cfg = config if config is not None else scenario.resolve_config()
         self._hid_factory = self._default_hid_factory if hid_factory is None else hid_factory
         self._hid = None
         self.clock = clock
         self.ui = UI(lcd, clock)
         self._items = list(scenario.steps)
+        self._hint_banner_shown: set = set()
 
     # ------------------------------------------------------------------ info
 
@@ -68,12 +70,19 @@ class ScenarioRunner:
         return bool(status and status.get("completed"))
 
     def get_module_score(self) -> int:
+        """Points of the active player, partial credit and hint penalties included."""
         total = 0
         for stage in self.scenario.stages:
-            status = self.db.get_challenge_status(stage.challenge_id)
-            if status and status.get("completed"):
-                total += status.get("points", stage.points)
+            status = self.db.get_challenge_status(stage.challenge_id) or {}
+            total += int(status.get("earned", 0))
         return total
+
+    def is_locked(self, item: Type[Step]) -> bool:
+        """Sequential scenarios: stage N needs stage N-1 solved (tools never lock)."""
+        if not (issubclass(item, Stage) and self.scenario.is_sequential(self.cfg)):
+            return False
+        previous = [s for s in self.scenario.stages if s.number == item.number - 1]
+        return bool(previous) and not self._completed(previous[0])
 
     def is_complete(self) -> bool:
         return all(self._completed(s) for s in self.scenario.stages)
@@ -104,6 +113,8 @@ class ScenarioRunner:
         marker = " "
         if issubclass(item, Stage) and self._completed(item):
             marker = "✓"
+        elif self.is_locked(item):
+            marker = "🔒"
         score = f"{self.get_module_score()}/{self.max_points}"
         footer = f"U/D SEL=Go {score}"
         if len(footer) > 16:
@@ -127,6 +138,9 @@ class ScenarioRunner:
     def run(self) -> int:
         """Entry point called by zerorange.py. Returns points earned this session."""
         sc = self.scenario
+        if self._fixed_config is None:   # pick up a new training session's secrets
+            self.cfg = sc.resolve_config()
+        self._hint_banner_shown.clear()
         logger.info("Scenario %s started", sc.key)
         self.emit({"event": "session_start", "scenario": sc.key})
         self._show_disclaimer()
@@ -150,7 +164,14 @@ class ScenarioRunner:
         return earned
 
     def _launch(self, item: Type[Step]) -> int:
+        if self.is_locked(item):
+            self.ui.show("Locked! 🔒", f"Solve stage {item.number - 1}", hold=2)
+            return 0
         was_complete = self.is_complete()
+        if issubclass(item, Stage) and item.hints and not self._completed(item) \
+                and item not in self._hint_banner_shown:
+            self._hint_banner_shown.add(item)   # once per visit, not on every retry
+            self.ui.show("Stuck? Press ►", f"Hint: -{item.hint_penalty}pts", hold=1.5)
         step = item(self.lcd, self.db, self.cfg, self._device(item.requires), self.sse,
                     clock=self.clock)
         try:

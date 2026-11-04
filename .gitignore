@@ -25,6 +25,8 @@ wheels/
 
 # ZeroRange specific
 scores.db
+*.db-wal
+*.db-shm
 test_scores.db
 logs/*.log
 *.log

@@ -9,7 +9,8 @@ Part 1b — RollJam:
   capture both with a Flipper). Jamming is lifted, press N+1 is replayed and
   accepted -> "Gate OPEN" -> stage solved.
 
-The scores DB has no partial credit, so points are only persisted after 1b.
+1a is worth 3 partial points (stored); the stage is solved after 1b (10 pts
+in total). A learner who already did 1a can jump straight to 1b.
 """
 
 import logging
@@ -37,6 +38,11 @@ class Stage1(Stage):
     description = "RollJam garage remote"
     requires = "hackrf"
     config_keys = ("rolling.device_id_hex", "rolling.seed_hex")
+    part_1a_points = 3
+    hints = (
+        "A rolling code changes on every press: a replay of an old press is refused.",
+        "RollJam: jam the receiver, keep press 1, capture press 2, then replay press 1.",
+    )
 
     @classmethod
     def defaults(cls):
@@ -110,10 +116,13 @@ class Stage1(Stage):
         if not self.ui.confirm("Got REJECTED?", "SEL=Yes ◄=Back"):
             return False
 
-        # Web-only progress marker: no DB write (no partial credit).
-        self.emit(event="substage_complete", stage="1a", points=3)
-        self.ui.show("Rolling code!", "1a OK, next: 1b", hold=2)
+        self.award_partial(self.part_1a_points, "1a")
+        self.ui.show("Rolling code!", f"+{self.part_1a_points}pts, next: 1b", hold=2)
         return True
+
+    def _skip_1a(self, receiver: ReceiverState) -> None:
+        """1a already credited: bring the receiver to the state 1a leaves it in."""
+        receiver.submit_frame(self._frame(self._initial_counter))
 
     def _run_1b(self, receiver: ReceiverState) -> bool:
         press_n1 = self._initial_counter + 1
@@ -165,12 +174,15 @@ class Stage1(Stage):
             on_event=self.emit,
         )
 
-        if not self._run_1a(receiver):
-            return 0
-
-        if not self.ui.confirm("Ready for 1b?", "SEL=Go ◄=Later"):
-            self.ui.show("1b skipped", "Pts after 1b", hold=2)
-            return 0
+        if self.earned() >= self.part_1a_points and \
+                self.ui.confirm("1a already done", "SEL=Go 1b ◄=Redo"):
+            self._skip_1a(receiver)
+        else:
+            if not self._run_1a(receiver):
+                return 0
+            if not self.ui.confirm("Ready for 1b?", "SEL=Go ◄=Later"):
+                self.ui.show("1b later...", f"{self.part_1a_points}/{self.points} kept", hold=2)
+                return 0
 
         if not self._run_1b(receiver):
             self.finish("Stage 1: retry 1b")

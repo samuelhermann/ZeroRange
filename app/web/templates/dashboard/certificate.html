@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Certificate — {{ player.name }} | ZeroRange</title>
+<style>
+@page { size: A4 landscape; margin: 14mm; }
+body { font-family: Georgia, "Times New Roman", serif; color:#1d1d1d; background:#fff; margin:0; padding:2rem; }
+.cert { border:6px double #ff6a00; padding:2.5rem 3rem; max-width:960px; margin:0 auto; text-align:center; }
+.brand { font-family:monospace; letter-spacing:.3em; color:#ff6a00; font-size:1.1rem; }
+h1 { font-size:2.2rem; margin:1.2rem 0 .3rem; font-weight:normal; }
+.name { font-size:2rem; margin:1rem 0; border-bottom:1px solid #ccc; display:inline-block; padding:0 2rem .3rem; }
+.score { font-size:1.2rem; margin:.5rem 0 1.5rem; }
+table { margin:0 auto; border-collapse:collapse; font-size:.85rem; text-align:left; }
+td, th { padding:.25rem .8rem; border-bottom:1px solid #eee; }
+th { color:#777; font-weight:normal; }
+.foot { margin-top:2rem; display:flex; justify-content:space-between; font-size:.8rem; color:#555; }
+.no-print { text-align:center; margin-top:1rem; font-family:monospace; }
+@media print { .no-print { display:none; } body { padding:0; } }
+</style>
+</head>
+<body>
+<div class="cert">
+  <div class="brand">ZERORANGE</div>
+  <h1>Certificate of completion</h1>
+  <p>Flipper Zero hands-on security training</p>
+  <div class="name">{{ player.name }}</div>
+  <div class="score">{{ player.score }} / {{ player.max_score }} points · {{ player.completed }} challenge(s) solved · rank {{ player.rank }}</div>
+  {% if challenges %}
+  <table>
+    <tr><th>Module</th><th>Challenge</th><th>Points</th><th>Best time</th></tr>
+    {% for c in challenges %}
+    <tr><td>{{ titles.get(c.module, c.module) }}</td><td>{{ c.name }}</td>
+        <td>{{ c.earned }}/{{ c.points }}</td><td>{{ c.best_time if c.best_time is not none else '—' }}s</td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+  <div class="foot"><span>Date: {{ today }}</span><span>Trainer: ____________________</span></div>
+</div>
+<p class="no-print"><button onclick="window.print()">Print / save as PDF</button> · <a href="{{ url_for('dashboard.index') }}">back</a></p>
+</body>
+</html>

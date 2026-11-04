@@ -24,7 +24,11 @@ class Stage2(IButtonMatchStage):
     prompt = "Touch iBtn fob"
     noun = "fob"
     streak_hint = "Try another fob"
-    success_lines = ("Gate unlocked!", "+10pts")
+    success_lines = ("Gate unlocked!", "+{points}pts")
+    hints = (
+        "The side gate trusts one DS1990 fob: borrow a staff fob and read it.",
+        "Flipper: iButton > Read the fob, then Saved > Emulate on the reader.",
+    )
 
     def reveal(self) -> None:
         raw = self.cfg_hex("tech_room_key_a_hex", DEFAULT_TECH_KEY_A)

@@ -1,9 +1,10 @@
 # Creating a ZeroRange scenario
 
-A **scenario** is a themed chain of scored **stages** (plus optional unscored
-**tools**) around a fictional target: a coffee machine, a car park, a hotel...
-Coffee and Garage are scenarios. Since v1.1 a scenario is *declared* in one
-folder; the framework provides everything else:
+A **scenario** is a chain of scored **stages** (plus optional unscored
+**tools**). Every LCD module is one: the fundamentals (iButton, NFC, RFID,
+SubGHZ, IR — `challenges/<module>/stages.py`) and the themed ones around a
+fictional target (Coffee, Garage, your hotel...). A scenario is *declared* in
+one folder; the framework provides everything else:
 
 | You write | The framework provides |
 |-----------|------------------------|
@@ -11,9 +12,13 @@ folder; the framework provides everything else:
 | One small class per stage | Scores DB rows (synced at boot), timing, history |
 | Config defaults | `config.json` / `config.local.json` overrides |
 | (optional) a web template | Generic web page, live SSE events, `/api/status` |
-| | Hardware injection (`hid`, `proxmark`, `hackrf`), "device missing" screens |
+| `hints = (...)` | Hint viewer on the ► key, point penalty, stored per player |
+| `sequential=True` | Stage N locked (🔒) until stage N-1 is solved |
+| `secrets=...` | Fresh keys / UIDs / badge files for every training session |
+| | Hardware injection (`hid`, `proxmark`, `hackrf`, `flirc`), "device missing" screens |
+| | Per-player scores, partial credit, leaderboard (see TRAINER_GUIDE.md) |
 | | Crash isolation: a failing stage never takes the box down |
-| | `tools/validate_scenarios.py` static checks |
+| | `tools/validate_scenarios.py` static checks, `--sim` mode to try it without hardware |
 
 ---
 
@@ -42,6 +47,9 @@ tests/hotel/test_hotel_scenario.py
 Challenge ids are allocated after the highest id in use (`--dry-run` shows the
 plan). Reboot the LCD app and the web companion: **Hotel** appears in the main
 menu and at `http://<pi>:8080/scenarios/hotel/`.
+
+No Pi at hand? `python3 zerorange.py --sim` runs everything in a terminal, and
+`tools/sim_inject.py` plays the learner (touch an iButton, present a card...).
 
 ## 2. Fill the TODOs, then validate
 
@@ -133,7 +141,9 @@ class Stage3(Stage):
     challenge_id = 24
     number = 3
     title = "Stage3:Minibar"
-    requires = "proxmark"          # "hid" | "proxmark" | "hackrf" -> self.hw
+    requires = "proxmark"          # "hid" | "proxmark" | "hackrf" | "flirc" -> self.hw
+    hints = ("The minibar badge is a MIFARE Classic 1K.",
+             "Sector 3 still uses the default key FFFFFFFFFFFF.")
 
     def run(self) -> int:
         if self.already_complete():
@@ -143,13 +153,14 @@ class Stage3(Stage):
             return 0
         self.start_timer()
         while True:
-            if not self.ui.confirm("Badge on PM3?", "SEL=Read ◄=Back"):
-                return 0
-            if self.check():
-                points = self.award()      # DB + history + web events
-                self.finish()              # "Stage 3 done! ◄=Back to menu"
+            self.ui.show("Minibar badge?", "")
+            card, outcome = self.wait_for(self.hw.nfc_scan, timeout=60, interval=0.5)
+            if card and self.check(card):
+                points = self.award()      # DB + history + web events, minus hint penalty
+                self.finish()              # "Stage 3 done!" / "+8pts ◄=Menu"
                 return points
-            self.ui.show("Not yet!", "Try again", hold=2)
+            if outcome == "back" or not self.retry("Not yet!"):
+                return 0
 ```
 
 Building blocks available on every stage:
@@ -162,6 +173,10 @@ Building blocks available on every stage:
 | `self.ui.wait(*buttons, timeout=)` / `poll(*buttons)` | blocking / non-blocking input (always waits for release) |
 | `self.ui.menu(count, render)` / `choose(labels)` | scrollable list |
 | `self.ui.notice(l0, l1)` | message, wait for BACK |
+| `self.wait_for(probe, timeout=, interval=)` | poll a device with a `◄=Back [42s]` countdown → `(value, "ok"/"back"/"timeout")` |
+| `self.retry(l0)` | "SEL=Retry ◄=Back" prompt |
+| `self.award_partial(points, "1a")` | credit part of a multi-part stage (kept if the learner leaves) |
+| `self.earned()` / `self.hints_used()` | what the active player already has |
 | `self.cfg_get("a.b", default)` / `cfg_hex` / `cfg_path` | config access (paths resolved from repo root) |
 | `self.emit(event="x", ...)` | event for the web companion |
 | `self.award(*extra_events)` | persist success, emit `status: success` + `stage_complete` |
@@ -171,6 +186,59 @@ Use `self.ui.sleep()` / `self.ui.now()` rather than `time.*`: tests then run
 instantly with a fake clock.
 
 ---
+
+## Hints
+
+```python
+class Stage2(MifareEmulationStage):
+    hints = ("The key leaked in Stage 1.", "NFC > Extra Actions > MIFARE Classic Keys > Add")
+    hint_penalty = 2          # per hint, capped at half of the stage's points
+```
+
+While the stage waits for anything, **►** (RIGHT) opens the hint viewer: the
+first view of each hint asks for confirmation and costs `hint_penalty`; hints
+already unlocked are free to re-read. Usage is stored per player, so leaving and
+coming back does not reset it. `award()` subtracts the penalty automatically.
+
+## Multi-part stages (partial credit)
+
+```python
+self.award_partial(3, "1a")     # stores 3/10 for the active player, emits "substage_complete"
+...
+if self.earned() >= 3 and self.ui.confirm("1a already done", "SEL=Go 1b ◄=Redo"):
+    ...                          # resume where the learner left
+points = self.award()           # full points when the whole stage is solved
+```
+
+See `challenges/garage/stage1_rolling.py`.
+
+## Sequential scenarios
+
+`ScenarioDef(sequential=True)` locks stage N (🔒 in the menu) until stage N-1 is
+solved — right for story chains where each stage leaks what the next one needs.
+Tools are never locked. A trainer can override it per scenario in config.json:
+`"coffee": {"sequential": false}`.
+
+## Per-session secrets
+
+```python
+def secrets(rng, config, out_dir):
+    key = random_hex(rng, 6)                        # app.core.session helpers
+    blocks = parse_nfc(resolve(config["room_badge"]))
+    blocks[7] = bytes.fromhex(key) + blocks[7][6:]  # sector 1 key A
+    write_nfc(out_dir / "room.nfc", blocks)
+    return {"room_key_hex": key, "room_badge": repo_relative(out_dir / "room.nfc")}
+
+SCENARIO = ScenarioDef(..., secrets=secrets)
+```
+
+When the trainer starts a **new session** (LCD Settings or dashboard), every
+scenario's `secrets()` runs; its return value overrides the config for that
+session (`run/session.json`) and the generated files live in
+`run/session/<key>/` (downloadable from the dashboard). Stages just read
+`self.cfg_*()` as usual. Helpers: `random_hex`, `random_ds1990_uid` (valid
+DS1990A with CRC), `repo_relative`, plus `app.core.nfc_file.make_mfc1k / parse_nfc /
+write_nfc`. Physical tokens cannot be randomized — leave their UIDs in config.json.
 
 ## Configuration
 
@@ -183,7 +251,7 @@ SCENARIO = ScenarioDef(
 ```
 
 Effective config = `defaults` ⟵ `config.json["hotel"]` ⟵ `config.local.json["hotel"]`
-(deep-merged). `config.local.json` is git-ignored: keep the real UIDs of your
+⟵ session secrets (deep-merged). `config.local.json` is git-ignored: keep the real UIDs of your
 own kit there.
 
 Global: `settings.hid_device` forces the iButton HID input device
@@ -215,8 +283,9 @@ Scenario-specific routes: create `app/web/routes/<key>.py` with
 ## Testing
 
 `tests/fakes.py` provides `FakeLCD` (scripted button presses, records
-screens), `FakeClock`, `FakeHID`, `FakePM3`, `FakeHackRF`, plus
-`make_stage()` / `make_runner()`:
+screens), `FakeClock`, `FakeHID`, `FakePM3` (scripted cards/tags/blocks/logs),
+`FakeHackRF` (scripted captures), `FakeFlirc`, plus `make_stage()` /
+`make_runner()`:
 
 ```python
 from app.core.ui import Button

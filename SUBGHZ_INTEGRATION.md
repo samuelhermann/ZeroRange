@@ -111,7 +111,7 @@ The SubGHZ module provides 3 challenges (10 points each):
 ### Files
 
 - `hackrf_handler.py` - Low-level HackRF interface using subprocess
-- `subghz_handler.py` - Challenge logic and LCD interaction
+- `challenges/subghz/stages.py` - Challenge logic (scenario stages)
 
 ## Configuration
 
@@ -131,9 +131,8 @@ Default target: **433.92 MHz**
 ### Signal Detection Parameters
 
 ```python
-# In subghz_handler.py
-TARGET_FREQUENCY = 433920000  # 433.92 MHz
-DETECTION_THRESHOLD = -55     # dBm
+# config.json -> "subghz": {"frequency_hz": 433920000, "threshold_dbm": -55}
+# (defaults in challenges/subghz/stages.py)
 
 # In hackrf_handler.py
 DEFAULT_SAMPLE_RATE = 2000000  # 2 MHz
@@ -177,8 +176,8 @@ hackrf_transfer -t test.raw -f 433920000 -s 2000000 -x 47
 
 ```bash
 cd /path/to/ZeroRange
-python3 hackrf_handler.py   # Tests HackRF handler
-python3 subghz_handler.py   # Tests SubGHZ handler (needs mock LCD)
+python3 hackrf_handler.py              # Tests HackRF handler
+python3 -m pytest tests/fundamentals   # SubGHZ stages with a mocked HackRF
 ```
 
 ## Troubleshooting

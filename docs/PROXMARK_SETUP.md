@@ -87,7 +87,7 @@ ls -l /dev/ttyACM*
 
 ```bash
 cd ~/ZeroRange
-python3 nfc_handler.py
+python3 -c "from proxmark_handler import ProxmarkHandler; print(ProxmarkHandler().nfc_scan())"
 ```
 
 Placez une carte NFC près du Proxmark pendant le test.
@@ -96,7 +96,7 @@ Placez une carte NFC près du Proxmark pendant le test.
 
 ```bash
 cd ~/ZeroRange
-python3 rfid_handler.py
+python3 -c "from proxmark_handler import ProxmarkHandler; print(ProxmarkHandler().rfid_scan())"
 ```
 
 Placez un tag RFID 125kHz près du Proxmark pendant le test.

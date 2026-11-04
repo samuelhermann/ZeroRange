@@ -45,9 +45,15 @@ Navigate with **▲ UP / ▼ DOWN**, launch with **● SELECT**, return with **�
 
 ## Stage 1 — Rolling-Code Teardown (10 pts)
 
-The scores database has no partial credit: the 10 points are stored once **both**
-parts are done. 1a alone is shown as progress (`substage_complete` event) but
-leaving after 1a stores nothing.
+1a is worth **3 partial points**, stored for the player (`substage_complete`
+event); the stage is solved — 10 points in total — after 1b. A learner who
+already did 1a is offered to jump straight to 1b.
+
+The scenario is **sequential**: Stage 2 unlocks after Stage 1, Stage 3 after
+Stage 2 (`"garage": {"sequential": false}` in config.json to disable).
+A **new training session** generates a new rolling remote (device id + seed,
+with matching `press_N*.sub` files) and a new tech-room Key A (badge
+regenerated); the pedestrian fob, being physical, keeps its configured UID.
 
 ### Sub-stage 1a: Replay rejected
 
@@ -171,7 +177,7 @@ http://192.168.1.193:8080/scenarios/garage/
 | `{"event": "frame_held", "counter": N, "tray_size": 1\|2}` | Frame added to capture tray |
 | `{"event": "replay_received", "counter": N, "accepted": bool, "reason": "..."}` | Replay decoded and evaluated |
 | `{"event": "window_slid", "last_accepted": N, "window": 16}` | Receiver accepted and advanced |
-| `{"event": "substage_complete", "stage": "1a", "points": 3}` | 1a done (progress only, nothing stored) |
+| `{"event": "substage_complete", "stage": "1a", "points": 3}` | 1a done (3 partial points stored) |
 | `{"event": "stage_complete", "stage": 1\|2\|3, "points": N}` | Stage credited |
 | `{"event": "key_leaked", "key_a_hex": "F15EC0DE0017"}` | Stage 2 Key A leak emitted |
 | `{"stage": N, "status": "success", "points": 10}` | Stage N completed (legacy form) |

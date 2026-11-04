@@ -42,7 +42,8 @@ class IButtonMatchStage(Stage):
     prompt: ClassVar[str] = "Touch iButton"
     noun: ClassVar[str] = "key"                     # "No key seen", "Wrong key!"
     streak_hint: ClassVar[str] = "Check your key"   # after max_wrong misses
-    success_lines: ClassVar[Tuple[str, str]] = ("Access granted!", "")
+    #: ``{points}`` is replaced by the points earned (after hint penalty).
+    success_lines: ClassVar[Tuple[str, str]] = ("Access granted!", "+{points}pts")
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -63,24 +64,14 @@ class IButtonMatchStage(Stage):
     def target_uid(self) -> str:
         return self.cfg_hex(self.uid_key, self.default_uid)
 
+    def matches(self, uid: str, target: str) -> bool:
+        return normalize_hex(uid) == target
+
     def _wait_uid(self) -> Tuple[Optional[str], bool]:
         """Return ``(uid, aborted)``; ``(None, False)`` means timeout."""
         self.hw.clear()
-        start = self.ui.now()
-        last_shown = None
-        while True:
-            uid = self.hw.take_uid()
-            if uid:
-                return uid, False
-            if self.ui.poll(Button.BACK):
-                return None, True
-            remaining = int(self.read_timeout - (self.ui.now() - start))
-            if remaining <= 0:
-                return None, False
-            if remaining != last_shown:
-                self.ui.line(1, f"◄=Back [{remaining}s]")
-                last_shown = remaining
-            self.ui.sleep(0.2)
+        uid, outcome = self.wait_for(self.hw.take_uid, timeout=self.read_timeout)
+        return uid, outcome == "back"
 
     # flow -------------------------------------------------------------------
 
@@ -113,13 +104,13 @@ class IButtonMatchStage(Stage):
                 logger.info("%s aborted by user", type(self).__name__)
                 return 0
             if uid is None:
-                if not self.ui.confirm(f"No {self.noun} seen", "SEL=Retry ◄=Back"):
+                if not self.retry(f"No {self.noun} seen"):
                     return 0
                 continue
 
-            if normalize_hex(uid) == target:
-                self.ui.show(*self.success_lines, hold=2)
+            if self.matches(uid, target):
                 points = self.award()
+                self.ui.show(*(line.format(points=points) for line in self.success_lines), hold=2)
                 self.reveal()
                 self.finish()
                 return points
@@ -178,7 +169,7 @@ class MifareEmulationStage(Stage):
     intro: ClassVar[Tuple[str, str]] = ()
     instructions: ClassVar[Sequence[Tuple[str, str]]] = ()   # screens shown after PM3 starts
     waiting_lines: ClassVar[Tuple[str, str]] = ("PM3 emulates card", "SEL=Done ◄=Back")
-    success_lines: ClassVar[Tuple[str, str]] = ("ACCESS GRANTED", "")
+    success_lines: ClassVar[Tuple[str, str]] = ("ACCESS GRANTED", "+{points}pts")
     not_yet_lines: ClassVar[Tuple[str, str]] = ("Not yet!", "Auth all sectors")
 
     def __init_subclass__(cls, **kwargs):
@@ -318,7 +309,7 @@ class MifareEmulationStage(Stage):
 
     def _success(self) -> int:
         points = self.award(*self.on_success())
-        self.ui.show(*self.success_lines, hold=3)
+        self.ui.show(*(line.format(points=points) for line in self.success_lines), hold=3)
         self.finish()
         return points
 

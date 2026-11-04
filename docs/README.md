@@ -161,14 +161,15 @@ sudo python3 zerorange.py
 sudo python3 test_usb_ibutton.py
 ```
 
-#### Test NFC
+#### Test NFC / RFID (Proxmark3)
 ```bash
-sudo python3 nfc_handler.py
+python3 -c "from proxmark_handler import ProxmarkHandler as P; p=P(); print(p.nfc_scan(), p.rfid_scan())"
 ```
 
-#### Test RFID
+#### Sans matériel
 ```bash
-sudo python3 rfid_handler.py
+python3 zerorange.py --sim     # LCD dans le terminal, matériel simulé
+python3 -m pytest              # tests unitaires
 ```
 
 ## Base de données
@@ -177,33 +178,18 @@ sudo python3 rfid_handler.py
 
 ### Tables
 
-#### challenges
-```sql
-CREATE TABLE challenges (
-    id INTEGER PRIMARY KEY,
-    module TEXT NOT NULL,
-    name TEXT NOT NULL,
-    description TEXT,
-    points INTEGER NOT NULL,
-    completed BOOLEAN DEFAULT 0,
-    best_time INTEGER DEFAULT NULL
-);
-```
+Schéma v2 (migration automatique depuis la v1) :
 
-#### history
-```sql
-CREATE TABLE history (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp TEXT NOT NULL,
-    challenge_id INTEGER NOT NULL,
-    success BOOLEAN NOT NULL,
-    time_taken INTEGER NOT NULL,
-    FOREIGN KEY (challenge_id) REFERENCES challenges(id)
-);
-```
+| Table | Contenu |
+|-------|---------|
+| `challenges` | catalogue (id, module, nom, points), synchronisé au démarrage depuis les scénarios |
+| `players` | joueurs ; un joueur est actif (`settings.active_player`) |
+| `progress` | par joueur et challenge : réussi, points gagnés (partiels / pénalité d'indices), meilleur temps, indices utilisés |
+| `history` | chaque tentative, avec le joueur |
+| `settings` | clé / valeur |
 
 ### Réinitialisation des scores
-Via le menu LCD: Paramètres → Reset → Confirm
+Via le menu LCD : Settings → Reset scores (joueur actif), ou le tableau de bord web `/dashboard/`.
 
 ## Architecture logicielle
 
@@ -212,10 +198,9 @@ ZeroRange
 ├── zerorange.py              # Application principale
 ├── lcd_manager.py            # Gestion LCD I2C
 ├── database.py               # Gestion SQLite
-├── ibutton_handler.py        # Challenges iButton
+├── app/                      # Framework scénarios, web, simulateur
+├── challenges/<module>/      # iButton, NFC, RFID, SubGHZ, IR, Coffee, Garage
 ├── ibutton_usb_reader.py     # Lecteur USB iButton
-├── nfc_handler.py            # Challenges NFC
-├── rfid_handler.py           # Challenges RFID
 ├── proxmark_handler.py       # Interface Proxmark3
 ├── web_lcd_server.py         # API Flask pour web
 └── web/                      # Interface web

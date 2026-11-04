@@ -14,6 +14,7 @@ CUSTOM_GLYPHS: Dict[str, Tuple[int, List[int]]] = {
     "✓": (1, [0x00, 0x01, 0x03, 0x16, 0x1C, 0x08, 0x00, 0x00]),
     "◄": (2, [0x02, 0x06, 0x0E, 0x1E, 0x0E, 0x06, 0x02, 0x00]),
     "►": (3, [0x08, 0x0C, 0x0E, 0x0F, 0x0E, 0x0C, 0x08, 0x00]),
+    "🔒": (4, [0x0E, 0x11, 0x11, 0x1F, 0x1B, 0x1B, 0x1F, 0x00]),
 }
 
 ROM_SUBSTITUTES: Dict[str, str] = {
@@ -31,7 +32,7 @@ def to_lcd(text: str) -> str:
             out.append(chr(CUSTOM_GLYPHS[ch][0]))
         elif ch in ROM_SUBSTITUTES:
             out.append(ROM_SUBSTITUTES[ch])
-        elif " " <= ch <= "~" or ch in "\x01\x02\x03":
+        elif " " <= ch <= "~" or ch in "\x01\x02\x03\x04":
             out.append(ch)
         else:
             base = unicodedata.normalize("NFKD", ch).encode("ascii", "ignore").decode()

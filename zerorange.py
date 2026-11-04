@@ -3,11 +3,14 @@
 ZeroRange - Flipper Zero Training System
 Main application: screen-based state machine on a 16x2 LCD + 5 buttons.
 
-Menus are data-driven:
-  * classic modules (iButton, NFC, RFID, SubGHZ, IR) come from app/catalog.py
-  * scenarios (Coffee, Garage, ...) are auto-discovered in challenges/*/scenario.py
+Every module (iButton, NFC, RFID, SubGHZ, IR, Coffee, Garage, ...) is a
+scenario auto-discovered in challenges/*/scenario.py.
+
+    python3 zerorange.py          # on the Raspberry Pi
+    python3 zerorange.py --sim    # anywhere: terminal LCD + simulated hardware
 """
 
+import argparse
 import importlib
 import logging
 import signal
@@ -15,12 +18,14 @@ import socket
 import sys
 import time
 from dataclasses import dataclass
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 
-from app.catalog import CLASSIC_MODULES, ClassicModule, build_catalog
+from app.catalog import build_catalog
+from app.core.auth import TRAINER_USER, get_trainer_password
 from app.core.config import config_section, load_config
 from app.core.events import EventBus
-from app.core.paths import DB_PATH, LOG_DIR
+from app.core.paths import DB_PATH, LOG_DIR, SIM_DB_PATH
+from app.core.session import load_session, new_session
 from app.core.ui import UI, Button
 from app.scenarios.registry import Registry, discover
 from app.scenarios.runner import ScenarioRunner
@@ -28,7 +33,7 @@ from database import Database
 
 logger = logging.getLogger("zerorange")
 
-VERSION = "1.1"
+VERSION = "1.2"
 
 #: A screen is a blocking function returning the next screen (None = main menu).
 Screen = Callable[[], Optional[Callable]]
@@ -60,32 +65,28 @@ class MenuEntry:
 class ZeroRange:
     """Main application class."""
 
-    def __init__(self, lcd=None, db=None, registry: Optional[Registry] = None, clock=None):
+    def __init__(self, lcd=None, db=None, registry: Optional[Registry] = None, clock=None,
+                 devices: Optional[Dict[str, object]] = None, db_path=None, events_dir=None):
         self.lcd = lcd
         self.db = db
+        self.db_path = db_path or DB_PATH
+        self.events_dir = events_dir
         self.registry = registry
         self.clock = clock
         self.ui: Optional[UI] = UI(lcd, clock) if lcd is not None else None
         self.config = load_config()
-
-        # Hardware handlers (None when the device / library is missing)
-        self.ibutton = None
-        self.proxmark = None
-        self.nfc = None
-        self.rfid = None
-        self.hackrf = None
-        self.subghz = None
-        self.flirc = None
-        self.ir = None
-
+        #: Shared hardware: "proxmark", "hackrf", "flirc" (None = not available).
+        #: The iButton HID reader is opened by each scenario that needs it.
+        self.devices: Dict[str, object] = dict(devices or {})
         self.scenarios: List[ScenarioRunner] = []
         self._main_sel = 0
         self._cleaned_up = False
 
     # ------------------------------------------------------------------ init
 
-    def _optional(self, label: str, factory: Callable[[], object]):
-        """Build an optional component; a failure only disables that module."""
+    @staticmethod
+    def _optional(label: str, factory: Callable[[], object]):
+        """Build an optional component; a failure only disables what needs it."""
         try:
             obj = factory()
             logger.info(f"{label} ready")
@@ -96,8 +97,18 @@ class ZeroRange:
 
     @staticmethod
     def _cls(module: str, name: str):
-        """Lazy import: a missing library (evdev, board...) disables one module, not the app."""
+        """Lazy import: a missing library (board, evdev...) only disables one device."""
         return getattr(importlib.import_module(module), name)
+
+    def _init_devices(self) -> None:
+        defaults = {
+            "proxmark": lambda: self._cls("proxmark_handler", "ProxmarkHandler")(),
+            "hackrf": lambda: self._cls("hackrf_handler", "HackRFHandler")(),
+            "flirc": lambda: self._cls("flirc_handler", "FlircHandler")(),
+        }
+        for name, factory in defaults.items():
+            if name not in self.devices:
+                self.devices[name] = self._optional(name, factory)
 
     def init_system(self):
         logger.info("Initializing ZeroRange...")
@@ -113,41 +124,29 @@ class ZeroRange:
         if self.registry is None:
             self.registry = discover()
         if self.db is None:
-            self.db = Database(str(DB_PATH), catalog=build_catalog(self.registry.scenarios))
-
-        hid_device = settings.get("hid_device")
-        self.ibutton = self._optional("iButton", lambda: self._cls(
-            "ibutton_handler", "iButtonHandler")(self.lcd, **({"usb_device": hid_device} if hid_device else {})))
-
-        self.proxmark = self._optional("Proxmark3", lambda: self._cls("proxmark_handler", "ProxmarkHandler")())
-        if self.proxmark is not None:
-            self.nfc = self._optional("NFC", lambda: self._cls("nfc_handler", "NFCHandler")(self.lcd, self.proxmark))
-            self.rfid = self._optional("RFID", lambda: self._cls("rfid_handler", "RFIDHandler")(self.lcd, self.proxmark))
-
-        self.hackrf = self._optional("HackRF", lambda: self._cls("hackrf_handler", "HackRFHandler")())
-        if self.hackrf is not None:
-            self.subghz = self._optional("SubGHZ", lambda: self._cls("subghz_handler", "SubGHZHandler")(self.lcd, self.hackrf))
-
-        self.flirc = self._optional("FLIRC", lambda: self._cls("flirc_handler", "FlircHandler")())
-        if self.flirc is not None:
-            self.ir = self._optional("IR", lambda: self._cls("ir_handler", "IRHandler")(self.lcd, self.flirc))
+            self.db = Database(str(self.db_path), catalog=build_catalog(self.registry.scenarios))
+        self._init_devices()
 
         self.scenarios = [
-            ScenarioRunner(sc, self.lcd, self.db, proxmark=self.proxmark, hackrf=self.hackrf,
-                           sse_emit=EventBus(sc.key), clock=self.clock)
+            ScenarioRunner(sc, self.lcd, self.db,
+                           proxmark=self.devices.get("proxmark"),
+                           hackrf=self.devices.get("hackrf"),
+                           flirc=self.devices.get("flirc"),
+                           hid_factory=self.devices.get("hid_factory"),
+                           sse_emit=EventBus(sc.key, self.events_dir), clock=self.clock)
             for sc in self.registry
         ]
         for key, error in self.registry.errors.items():
             logger.error(f"Scenario '{key}' disabled: {error}")
 
         self.ui.show(f"ZeroRange v{VERSION}", "Ready!", hold=1)
-        logger.info(f"Initialization complete. Score: {self.db.get_total_score()}/{self.db.get_max_score()}")
+        logger.info(f"Initialization complete. Player: {self.db.get_active_player()['name']}, "
+                    f"score {self.db.get_total_score()}/{self.db.get_max_score()}")
 
     # ------------------------------------------------------------------ menus
 
     def menu_entries(self) -> List[MenuEntry]:
-        entries = [MenuEntry(m.title, self._module_screen(m)) for m in CLASSIC_MODULES]
-        entries += [MenuEntry(r.title, self._scenario_screen(r)) for r in self.scenarios]
+        entries = [MenuEntry(r.title, self._scenario_screen(r)) for r in self.scenarios]
         entries.append(MenuEntry("Settings", self.settings_screen))
         return entries
 
@@ -169,45 +168,6 @@ class ZeroRange:
         self._main_sel = choice
         return entries[choice].open
 
-    def _module_screen(self, module: ClassicModule) -> Screen:
-        def screen() -> Optional[Screen]:
-            handler = getattr(self, module.handler)
-            if handler is None:
-                self.ui.notice(*module.unavailable)
-                return self.main_menu
-
-            selected = 0
-            while True:
-                def render(i):
-                    ch = module.challenges[i]
-                    status = self.db.get_challenge_status(ch.id) or {}
-                    mark = " ✓" if status.get("completed") else ""
-                    return f">{ch.label}{mark}", "U/D SEL=Go L=Bk"
-
-                choice = self.ui.menu(len(module.challenges), render, start=selected)
-                if choice is None:
-                    return self.main_menu
-                selected = choice
-                self.run_classic_challenge(handler, module.challenges[choice])
-        return screen
-
-    def run_classic_challenge(self, handler, challenge) -> int:
-        """Run one handler method, record the attempt, return points earned."""
-        logger.info(f"Starting challenge {challenge.id} ({challenge.label})")
-        start = time.time()
-        try:
-            points = int(getattr(handler, challenge.method)() or 0)
-        except Exception as e:
-            logger.error(f"Error running challenge {challenge.id}: {e}", exc_info=True)
-            return 0
-        elapsed = int(time.time() - start)
-        self.db.add_history(challenge.id, points > 0, elapsed)
-        if points > 0:
-            self.db.mark_completed(challenge.id, elapsed)
-            logger.info(f"Challenge {challenge.id} completed! "
-                        f"Score: {self.db.get_total_score()}/{self.db.get_max_score()}")
-        return points
-
     def _scenario_screen(self, runner: ScenarioRunner) -> Screen:
         def screen() -> Optional[Screen]:
             try:
@@ -219,14 +179,43 @@ class ZeroRange:
 
     # ------------------------------------------------------------------ settings
 
+    def settings_items(self):
+        player = self.db.get_active_player()["name"]
+        return [
+            (f"Player:{player}", self.player_screen),
+            ("Statistics", self.stats_screen),
+            ("Leaderboard", self.leaderboard_screen),
+            ("New session", self.session_screen),
+            ("Reset scores", self.reset_screen),
+            ("Web login", self.web_login_screen),
+            ("About", self.about_screen),
+        ]
+
     def settings_screen(self) -> Optional[Screen]:
-        items = [("Statistics", self.stats_screen),
-                 ("Reset scores", self.reset_screen),
-                 ("About", self.about_screen)]
-        choice = self.ui.choose([label for label, _ in items], footer="U/D SEL=Go L=Bk")
+        items = self.settings_items()
+        choice = self.ui.choose([label[:15] for label, _ in items], footer="U/D SEL=Go L=Bk")
         if choice is None:
             return self.main_menu
         return items[choice][1]
+
+    def player_screen(self) -> Optional[Screen]:
+        players = self.db.list_players()
+        active = self.db.active_player_id
+        labels = [f"{'*' if p['id'] == active else ' '}{p['name'][:10]} {p['score']}" for p in players]
+        labels.append("+ New player")
+        start = next((i for i, p in enumerate(players) if p["id"] == active), 0)
+        choice = self.ui.choose(labels, footer="SEL=Use ◄=Back", start=start)
+        if choice is None:
+            return self.settings_screen
+        if choice == len(players):
+            pid = self.db.add_player()
+            self.db.set_active_player(pid)
+            self.ui.show("New player:", self.db.get_active_player()["name"], hold=2)
+            self.ui.show("Rename it on the", "web dashboard", hold=2)
+        else:
+            self.db.set_active_player(players[choice]["id"])
+            self.ui.show("Now playing:", players[choice]["name"], hold=1.5)
+        return self.main_menu
 
     def stats_screen(self) -> Optional[Screen]:
         s = self.db.get_stats()
@@ -235,17 +224,42 @@ class ZeroRange:
         self.ui.wait(Button.BACK, timeout=10)
         return self.settings_screen
 
+    def leaderboard_screen(self) -> Optional[Screen]:
+        board = self.db.leaderboard()
+        self.ui.choose([f"{r['rank']}.{r['name'][:9]} {r['score']}" for r in board],
+                       footer="Leaderboard ◄=Bk")
+        return self.settings_screen
+
+    def session_screen(self) -> Optional[Screen]:
+        current = load_session().get("id", "none")
+        self.ui.show("Session:", current[-16:], hold=2)
+        if not self.ui.confirm("New secrets?", "SEL=Yes ◄=No"):
+            return self.settings_screen
+        self.ui.show("Generating...", "keys & badges")
+        session = new_session(self.registry.scenarios)
+        self.ui.show("Session ready:", session["id"][-16:], hold=2)
+        if self.ui.confirm("Reset ALL scores", "too? SEL=Y ◄=N"):
+            for player in self.db.list_players():
+                self.db.reset_scores(player["id"])
+            self.ui.show("All scores reset", "", hold=1.5)
+        return self.main_menu
+
+    def web_login_screen(self) -> Optional[Screen]:
+        self.ui.show(f"user: {TRAINER_USER}", f"pass: {get_trainer_password(self.config)}")
+        self.ui.wait(Button.BACK, timeout=30)
+        return self.settings_screen
+
     def about_screen(self) -> Optional[Screen]:
         self.ui.notice(f"ZeroRange v{VERSION}", "Flipper Train ◄")
         return self.settings_screen
 
     def reset_screen(self) -> Optional[Screen]:
-        if not self.ui.confirm("Reset scores?", "SEL=Yes ◄=No"):
+        player = self.db.get_active_player()["name"]
+        if not self.ui.confirm(f"Reset {player[:9]}?", "SEL=Yes ◄=No"):
             logger.info("Reset cancelled")
             return self.settings_screen
-        logger.info("Resetting all scores...")
         self.db.reset_scores()
-        self.ui.show("Scores Reset!", "Progress cleared", hold=2)
+        self.ui.show("Scores Reset!", player[:16], hold=2)
         return self.main_menu
 
     # ------------------------------------------------------------------ loop
@@ -268,12 +282,15 @@ class ZeroRange:
             return
         self._cleaned_up = True
         logger.info("Cleaning up...")
-        for component in [*self.scenarios, self.ibutton, self.subghz, self.ir]:
-            if component is not None and hasattr(component, "close"):
+        for runner in self.scenarios:
+            runner.close()
+        for name in ("hackrf", "flirc"):
+            device = self.devices.get(name)
+            if device is not None and hasattr(device, "cleanup"):
                 try:
-                    component.close()
+                    device.cleanup()
                 except Exception as e:
-                    logger.error(f"Error closing {type(component).__name__}: {e}")
+                    logger.error(f"Error closing {name}: {e}")
         if self.lcd is not None:
             try:
                 self.ui.show("  Shutting down", "   Bye bye...", hold=2)
@@ -298,13 +315,15 @@ class ZeroRange:
             self.cleanup()
 
 
-def setup_logging(level: str = "INFO") -> None:
+def setup_logging(level: str = "INFO", to_stdout: bool = True) -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
+    handlers: List[logging.Handler] = [logging.FileHandler(LOG_DIR / 'zerorange.log')]
+    if to_stdout:
+        handlers.append(logging.StreamHandler(sys.stdout))
     logging.basicConfig(
         level=getattr(logging, str(level).upper(), logging.INFO),
         format='[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s',
-        handlers=[logging.FileHandler(LOG_DIR / 'zerorange.log'),
-                  logging.StreamHandler(sys.stdout)],
+        handlers=handlers,
     )
 
 
@@ -313,13 +332,30 @@ def _raise_exit(signum, _frame):
     raise SystemExit(0)
 
 
-def main():
-    setup_logging(config_section("settings").get("log_level", "INFO"))
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="ZeroRange - Flipper Zero training system")
+    parser.add_argument("--sim", action="store_true",
+                        help="run without hardware: terminal LCD + simulated devices "
+                             "(drive them with tools/sim_inject.py or the web dashboard)")
+    args = parser.parse_args(argv)
+
+    # In --sim mode the terminal is the LCD: keep logs in logs/zerorange.log only.
+    setup_logging(config_section("settings").get("log_level", "INFO"), to_stdout=not args.sim)
     signal.signal(signal.SIGINT, _raise_exit)
     signal.signal(signal.SIGTERM, _raise_exit)
     logger.info("=" * 50)
-    logger.info("ZeroRange starting...")
-    ZeroRange().run()
+    logger.info("ZeroRange starting%s...", " in SIMULATION mode" if args.sim else "")
+
+    if args.sim:
+        from app.sim import build_sim_environment
+        env = build_sim_environment()
+        app = ZeroRange(lcd=env.lcd, devices=env.devices, db_path=SIM_DB_PATH)
+        try:
+            app.run()
+        finally:
+            env.close()
+    else:
+        ZeroRange().run()
     logger.info("ZeroRange stopped")
 
 

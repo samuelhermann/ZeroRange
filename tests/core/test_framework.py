@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app.catalog import CLASSIC_MODULES, build_catalog, next_free_ids
+from app.catalog import build_catalog, next_free_ids
 from app.core.nfc_file import make_mfc1k, parse_nfc, render_nfc
 from app.core.ui import Button
 from app.scenarios.base import ScenarioDef, Stage, Tool
@@ -52,7 +52,7 @@ class TestRegistry(unittest.TestCase):
 
     def test_discovers_bundled_scenarios_in_order(self):
         reg = discover()
-        self.assertEqual(reg.keys()[:2], ["coffee", "garage"])
+        self.assertEqual(reg.keys(), ["ibutton", "nfc", "rfid", "subghz", "ir", "coffee", "garage"])
         self.assertEqual(reg.errors, {})
 
     def test_broken_scenario_is_isolated(self):
@@ -115,7 +115,8 @@ class TestCatalog(unittest.TestCase):
         rows = build_catalog(discover().scenarios)
         ids = [r[0] for r in rows]
         self.assertEqual(len(ids), len(set(ids)))
-        self.assertEqual(sum(m.max_points for m in CLASSIC_MODULES), 150)
+        self.assertEqual(ids, list(range(1, 22)))   # ids are stable: progress is stored by id
+        self.assertEqual(sum(r[4] for r in rows), 210)
 
     def test_next_free_ids(self):
         self.assertEqual(next_free_ids([(1, "", "", "", 1), (7, "", "", "", 1)], 3), [8, 9, 10])

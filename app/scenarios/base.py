@@ -11,20 +11,23 @@ types in :mod:`app.scenarios.stages`) and implementing :meth:`Stage.run`.
 """
 
 import logging
+import random
+import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, ClassVar, Dict, List, Optional, Sequence, Tuple, Type
 
 from app.core.config import config_section as _config_section, deep_merge, lookup
 from app.core.paths import resolve
-from app.core.ui import UI, Clock, normalize_hex
+from app.core.session import session_overrides
+from app.core.ui import UI, Button, Clock, normalize_hex
 
 logger = logging.getLogger(__name__)
 
 EventSink = Callable[[Dict[str, Any]], None]
 
 #: Hardware a step can ask for. The runner injects the matching object as ``self.hw``.
-KNOWN_DEVICES = ("hid", "proxmark", "hackrf")
+KNOWN_DEVICES = ("hid", "proxmark", "hackrf", "flirc")
 
 
 def _noop(_event: Dict[str, Any]) -> None:
@@ -78,7 +81,8 @@ class Step:
     def hardware_ready(self, allow_simulation: bool = False) -> bool:
         if self.hw is None:
             return False
-        if getattr(self.hw, "available", True) is False:
+        # HIDReader.available / HackRF & FLIRC .device_connected
+        if any(getattr(self.hw, attr, True) is False for attr in ("available", "device_connected")):
             return False
         if not allow_simulation and getattr(self.hw, "simulation_mode", False):
             return False
@@ -113,10 +117,17 @@ class Stage(Step):
     name: ClassVar[str] = ""
     description: ClassVar[str] = ""
     points: ClassVar[int] = 10
+    #: Hints shown with the RIGHT (►) key, one at a time, each costing
+    #: ``hint_penalty`` points (at most half of the points in total).
+    hints: ClassVar[Sequence[str]] = ()
+    hint_penalty: ClassVar[int] = 2
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._t0: Optional[float] = None
+        self.awarded: Optional[int] = None
+        if self.hints:
+            self.ui.hint_handler = self.show_hints
 
     # -- progress -----------------------------------------------------------
 
@@ -132,24 +143,110 @@ class Stage(Step):
             return 0
         return max(0, int(self.ui.now() - self._t0))
 
+    def _status(self) -> Dict[str, Any]:
+        return self.db.get_challenge_status(self.challenge_id) or {}
+
+    def earned(self) -> int:
+        """Points already credited (partial credit included)."""
+        return int(self._status().get("earned", 0))
+
+    def hints_used(self) -> int:
+        return int(self._status().get("hints_used", 0))
+
+    def penalty(self) -> int:
+        return min(self.hints_used() * self.hint_penalty, self.points // 2)
+
     def award(self, *extra_events: Dict[str, Any]) -> int:
-        """Persist success, notify the web companion, return the points."""
+        """Persist success (minus hint penalty), notify the web companion,
+        return the points earned."""
         elapsed = self.elapsed()
+        points = self.points - self.penalty()
         self.db.add_history(self.challenge_id, True, elapsed)
-        self.db.mark_completed(self.challenge_id, elapsed)
-        logger.info("%s solved in %ss (+%s pts)", type(self).__name__, elapsed, self.points)
-        self.emit(stage=self.number, status="success", points=self.points)
-        self.emit(event="stage_complete", stage=self.number, points=self.points)
+        self.db.mark_completed(self.challenge_id, elapsed, points)
+        self.awarded = points
+        logger.info("%s solved in %ss (+%s/%s pts)", type(self).__name__, elapsed, points, self.points)
+        self.emit(stage=self.number, status="success", points=points)
+        self.emit(event="stage_complete", stage=self.number, points=points)
         for event in extra_events:
             self.emit(event)
-        return self.points
+        return points
+
+    def award_partial(self, points: int, part: str) -> None:
+        """Credit part of the stage (e.g. "1a") without completing it."""
+        self.db.record_partial(self.challenge_id, points)
+        logger.info("%s part %s: %s pts credited", type(self).__name__, part, points)
+        self.emit(event="substage_complete", stage=part, points=points)
+
+    # -- waiting for the learner ------------------------------------------------
+
+    def wait_for(self, probe: Callable[[], Any], *, timeout: float,
+                 interval: float = 0.2, row: int = 1) -> Tuple[Any, str]:
+        """Poll ``probe()`` until it returns something truthy.
+
+        Shows a ``◄=Back [42s]`` countdown on *row*. Returns ``(value, "ok")``,
+        ``(None, "back")`` or ``(None, "timeout")``. RIGHT opens the hints.
+        """
+        start = self.ui.now()
+        shown = None
+        while True:
+            value = probe()
+            if value:
+                return value, "ok"
+            if self.ui.poll(Button.BACK):
+                return None, "back"
+            remaining = int(timeout - (self.ui.now() - start))
+            if remaining <= 0:
+                return None, "timeout"
+            if remaining != shown:
+                self.ui.line(row, f"◄=Back [{remaining}s]")
+                shown = remaining
+            self.ui.sleep(interval)
+
+    def retry(self, line0: str) -> bool:
+        """``line0`` + "SEL=Retry ◄=Back"; True to try again."""
+        return self.ui.confirm(line0, "SEL=Retry ◄=Back")
+
+    # -- hints --------------------------------------------------------------
+
+    def show_hints(self) -> None:
+        """RIGHT-key handler: show unlocked hints, offer to buy the next one."""
+        used = min(self.hints_used(), len(self.hints))
+        if used == 0:
+            if not self._buy_hint(1):
+                return
+            used = 1
+        while True:
+            self._page(f"Hint {used}/{len(self.hints)}", self.hints[used - 1])
+            if used >= len(self.hints) or not self._buy_hint(used + 1):
+                return
+            used += 1
+
+    def _buy_hint(self, n: int) -> bool:
+        cost = f"-{self.hint_penalty}pt" if self.penalty() + self.hint_penalty <= self.points // 2 \
+            else "free"
+        if not self.ui.confirm(f"Hint {n}/{len(self.hints)}? {cost}", "SEL=Yes ◄=No"):
+            return False
+        total = self.db.use_hint(self.challenge_id)
+        self.emit(event="hint_used", stage=self.number, hints_used=total)
+        return True
+
+    def _page(self, title: str, text: str) -> None:
+        lines = textwrap.wrap(text, 16) or [""]
+        pages = [(title, lines[0])] + [(lines[i], lines[i + 1] if i + 1 < len(lines) else "")
+                                       for i in range(1, len(lines), 2)]
+        for line0, line1 in pages:
+            self.ui.show(line0, line1)
+            if self.ui.wait(Button.SELECT, Button.RIGHT, Button.BACK) == Button.BACK:
+                return
 
     # -- common screens -----------------------------------------------------
 
     def show_already_solved(self, hold: float = 2.0) -> None:
         self.ui.show(f"Stage {self.number} done!", "Already solved ✓", hold=hold)
 
-    def finish(self, line0: Optional[str] = None, line1: str = "◄=Back to menu") -> None:
+    def finish(self, line0: Optional[str] = None, line1: Optional[str] = None) -> None:
+        if line1 is None:
+            line1 = f"+{self.awarded}pts ◄=Menu" if self.awarded is not None else "◄=Back to menu"
         self.ui.notice(line0 or f"Stage {self.number} done!", line1)
 
 
@@ -176,11 +273,22 @@ class ScenarioDef:
     order: int = 100                          # main-menu position
     #: Scenario-level config defaults; config.json[section] overrides them.
     defaults: Dict[str, Any] = field(default_factory=dict)
+    #: Stage N is locked until stage N-1 is solved (config key "sequential" overrides).
+    sequential: bool = False
+    #: ``secrets(rng, config, out_dir) -> overrides`` regenerates per-session
+    #: secrets (keys, UIDs, badge files...). See app/core/session.py.
+    secrets: Optional[Callable[[random.Random, Dict[str, Any], Path], Dict[str, Any]]] = None
     extra: Dict[str, Any] = field(default_factory=dict)
 
-    def resolve_config(self, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """``defaults`` deep-merged with ``config.json[section]`` (+ local overlay)."""
-        return deep_merge(self.defaults, _config_section(self.section, config))
+    def resolve_config(self, config: Optional[Dict[str, Any]] = None,
+                       session: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """``defaults`` <- ``config.json[section]`` (+ local overlay) <- session secrets."""
+        merged = deep_merge(self.defaults, _config_section(self.section, config))
+        overrides = session_overrides(self.section, session)
+        return deep_merge(merged, overrides) if overrides else merged
+
+    def is_sequential(self, config: Dict[str, Any]) -> bool:
+        return bool(config.get("sequential", self.sequential))
 
     @property
     def section(self) -> str:

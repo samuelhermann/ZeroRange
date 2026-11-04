@@ -24,7 +24,11 @@ class Stage1(IButtonMatchStage):
     prompt = "Touch iBtn token"
     noun = "token"
     streak_hint = "Check the token"
-    success_lines = ("Token OK! +10pts", "Stage 1 SOLVED")
+    success_lines = ("Token OK! +{points}pts", "Stage 1 SOLVED")
+    hints = (
+        "Technicians open the machine with an iButton token. Find it and touch the reader.",
+        "No token? A Flipper can emulate one it has read: iButton > Saved > Emulate.",
+    )
 
     def reveal(self) -> None:
         raw = self.cfg_hex("master_key_b_hex", DEFAULT_KEY_B)

@@ -9,9 +9,22 @@ from flask import Flask, jsonify, request
 from flask_cors import CORS
 import json
 import os
+import re
+import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from app.core.config import config_section  # noqa: E402
 
 app = Flask(__name__)
-CORS(app)
+
+# Only the box's own pages (docs site on :8000, web companion on :8080) may call
+# this API from a browser — not any website a learner happens to visit.
+WEB_CFG = config_section("web")
+ALLOWED_ORIGINS = WEB_CFG.get("lcd_api_origins") or [re.compile(r"^https?://[^/]+:(8000|8080)$")]
+CORS(app, origins=ALLOWED_ORIGINS)
+#: Set "web": {"lcd_remote_control": false} to make the web LCD read-only.
+REMOTE_CONTROL = bool(WEB_CFG.get("lcd_remote_control", True))
 
 SHARED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'run')
 LCD_STATE_FILE = os.path.join(SHARED_DIR, 'lcd_state.json')
@@ -60,7 +73,12 @@ def get_state():
 @app.route('/api/lcd/button', methods=['POST'])
 def button_press():
     """Send a button press to the physical app via shared file"""
-    data = request.get_json()
+    if not REMOTE_CONTROL:
+        return jsonify({'success': False, 'error': 'remote control disabled'}), 403
+    # JSON only: a cross-site <form> cannot send application/json without a CORS preflight
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({'success': False, 'error': 'expected JSON body'}), 415
     button = data.get('button', '')
 
     button_num = BUTTON_MAP.get(button)
@@ -69,7 +87,6 @@ def button_press():
         print(f"Web button: {button} -> btn {button_num}")
 
     # Small delay then return current state
-    import time
     time.sleep(0.2)
 
     return jsonify({
@@ -100,4 +117,5 @@ if __name__ == '__main__':
     print("\nAPI server on http://0.0.0.0:5000")
     print("=" * 60)
 
+    print(f"Remote control: {'enabled' if REMOTE_CONTROL else 'disabled'}")
     app.run(host='0.0.0.0', port=5000, debug=False)

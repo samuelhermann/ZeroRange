@@ -31,5 +31,9 @@ class Stage2(MifareEmulationStage):
         ("Use Flipper Zero", "Add KeyB to dict"),
     )
     waiting_lines = ("Sectors", "SEL=Done ◄=Back")
-    success_lines = ("ALL SECTORS READ", "+10pts Stage 2!")
+    success_lines = ("ALL SECTORS READ", "+{points}pts Stage 2!")
     not_yet_lines = ("Not all sectors", "readable w/ KeyB")
+    hints = (
+        "Key B for sectors 8-14 leaked in Stage 1 (the 'Leaked log' screen).",
+        "Flipper: NFC > Extra Actions > MIFARE Classic Keys > Add, then NFC > Read.",
+    )

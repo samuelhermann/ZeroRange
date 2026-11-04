@@ -26,5 +26,9 @@ class Stage3(MifareEmulationStage):
 
     intro = ("Garage Stage 3", "Tech room. Open!")
     waiting_lines = ("PM3 emulating...", "SEL=Done ◄=Back")
-    success_lines = ("Access granted!", "+10pts")
+    success_lines = ("Access granted!", "+{points}pts")
     not_yet_lines = ("Not yet!", "Use Key A first")
+    hints = (
+        "The post-it from Stage 2 holds the tech-room Key A for sector 0.",
+        "Flipper: NFC > Extra Actions > MIFARE Classic Keys > Add, then read the card.",
+    )

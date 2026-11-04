@@ -100,6 +100,10 @@ class UI:
     def __init__(self, lcd, clock: Optional[Clock] = None):
         self.lcd = lcd
         self.clock = clock or Clock()
+        #: Called when RIGHT (►) is pressed while waiting for other buttons
+        #: (stages install their hint viewer here). The screen is restored after.
+        self.hint_handler: Optional[Callable[[], None]] = None
+        self._screen: Tuple[str, str] = ("", "")
 
     # -- time -------------------------------------------------------------
 
@@ -113,12 +117,16 @@ class UI:
 
     def show(self, line0: str = "", line1: str = "", hold: float = 0.0) -> None:
         """Write both lines (each padded/truncated to 16 chars by the LCD driver)."""
-        self.lcd.write_line(0, fit(line0))
-        self.lcd.write_line(1, fit(line1))
+        self._screen = (fit(line0), fit(line1))
+        self.lcd.write_line(0, self._screen[0])
+        self.lcd.write_line(1, self._screen[1])
         if hold:
             self.sleep(hold)
 
     def line(self, row: int, text: str) -> None:
+        screen = list(self._screen)
+        screen[row] = fit(text)
+        self._screen = (screen[0], screen[1])
         self.lcd.write_line(row, fit(text))
 
     def slides(self, title: str, lines: Iterable[str], hold: float = 1.5,
@@ -146,7 +154,20 @@ class UI:
             if self.lcd.button_pressed(int(btn)):
                 self.lcd.wait_button_release(int(btn))
                 return Button(btn)
+        if self.hint_handler is not None and buttons and Button.RIGHT not in buttons:
+            if self.lcd.button_pressed(int(Button.RIGHT)):
+                self.lcd.wait_button_release(int(Button.RIGHT))
+                self._run_hint_handler()
         return None
+
+    def _run_hint_handler(self) -> None:
+        handler, saved = self.hint_handler, self._screen
+        self.hint_handler = None          # no nested hint viewers
+        try:
+            handler()
+        finally:
+            self.hint_handler = handler
+            self.show(*saved)
 
     def wait(self, *buttons: Button, timeout: Optional[float] = None,
              on_tick: Optional[Callable[[float], None]] = None) -> Optional[Button]:

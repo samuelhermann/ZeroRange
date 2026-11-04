@@ -247,7 +247,7 @@ I built ZeroRange, an open source training platform for the Flipper Zero based o
 - 📄 Full installation guide: https://github.com/samxplogs/ZeroRange/blob/main/INSTALLATION.md
 - 📄 Proxmark3 integration: https://github.com/samxplogs/ZeroRange/blob/main/PROXMARK_INTEGRATION.md
 - 📄 HackRF/SubGHz integration: https://github.com/samxplogs/ZeroRange/blob/main/SUBGHZ_INTEGRATION.md
-- 📄 Challenge format (JSON): https://github.com/samxplogs/ZeroRange/blob/main/docs/CHALLENGE_FORMAT.md
+- 📄 Create your own scenario: https://github.com/samxplogs/ZeroRange/blob/main/docs/SCENARIO_GUIDE.md
 
 ---
 
@@ -312,7 +312,7 @@ flipper zero training platform, how to learn flipper zero, physical CTF platform
 - **Tools/software used:** Python 3, Flask, SQLite, hackrf_transfer, rtl_433, Proxmark3 client, smbus2, systemd
 - **Hardware shown:** Raspberry Pi 5, Adafruit LCD 16x2 RGB, Proxmark3, HackRF One, iButton USB Reader, Flipper Zero
 - **Affiliate links available:** Amazon (Pi 5, LCD, Proxmark3, HackRF), AliExpress (Proxmark3, HackRF+PortaPack, iButton reader)
-- **External resources to mention:** GitHub repo, embedded web documentation, CHALLENGE_FORMAT.md for creating custom challenges
+- **External resources to mention:** GitHub repo, embedded web documentation, SCENARIO_GUIDE.md for creating custom scenarios
 - **Collaborations/mentions:** Call to the community to contribute, fork, and propose new scenarios
 
 ---

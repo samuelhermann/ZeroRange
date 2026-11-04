@@ -9,17 +9,10 @@ import adafruit_character_lcd.character_lcd_rgb_i2c as character_lcd
 import smbus2
 import time
 import logging
-import json
-import os
-
+from app.core import lcd_mirror
 from app.core.lcd_charset import CUSTOM_GLYPHS, to_lcd
 
 logger = logging.getLogger(__name__)
-
-# Shared state files for web sync
-SHARED_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'run')
-LCD_STATE_FILE = os.path.join(SHARED_DIR, 'lcd_state.json')
-WEB_BUTTON_FILE = os.path.join(SHARED_DIR, 'web_button.json')
 
 
 class LCDManager:
@@ -52,10 +45,8 @@ class LCDManager:
         self._lines = ['', '']
         self._web_btn_cache = None
 
-        # Ensure shared dir exists
-        os.makedirs(SHARED_DIR, exist_ok=True)
         # Clear any stale web button
-        self._clear_web_button()
+        lcd_mirror.clear_web_button()
 
         try:
             # Reset MCP23017 to clean state before initialization
@@ -259,43 +250,16 @@ class LCDManager:
 
     def _sync_state_to_file(self):
         """Write current LCD state to shared file for web sync"""
-        try:
-            state = {'line1': self._lines[0], 'line2': self._lines[1]}
-            tmp = LCD_STATE_FILE + '.tmp'
-            with open(tmp, 'w') as f:
-                json.dump(state, f)
-            os.replace(tmp, LCD_STATE_FILE)
-        except Exception:
-            pass
-
-    def _clear_web_button(self):
-        """Clear the web button file"""
-        try:
-            if os.path.exists(WEB_BUTTON_FILE):
-                os.remove(WEB_BUTTON_FILE)
-        except Exception:
-            pass
+        lcd_mirror.write_state(self._lines)
 
     def _read_web_button_file(self):
         """
-        Read web button file once and cache the value.
-        Subsequent calls return the cached value without file I/O.
+        Read the web button file once and cache the value.
         The cache is cleared only when consumed by button_pressed().
         """
-        if self._web_btn_cache is not None:
-            return self._web_btn_cache
-        try:
-            if not os.path.exists(WEB_BUTTON_FILE):
-                return None
-            with open(WEB_BUTTON_FILE, 'r') as f:
-                data = json.load(f)
-            os.remove(WEB_BUTTON_FILE)
-            btn = data.get('button')
-            if btn:
-                self._web_btn_cache = btn
-            return btn
-        except Exception:
-            return None
+        if self._web_btn_cache is None:
+            self._web_btn_cache = lcd_mirror.take_web_button()
+        return self._web_btn_cache
 
     def check_web_button(self):
         """

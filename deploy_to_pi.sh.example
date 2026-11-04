@@ -37,14 +37,14 @@ echo "Connexion OK"
 
 # Copy files
 echo ""
-echo "Copie des fichiers principaux..."
-sshpass -p "$PI_PASS" scp -o StrictHostKeyChecking=no \
-    start_all.sh \
-    stop_all.sh \
-    install_service.sh \
-    zerorange.service \
-    ibutton_handler.py \
-    $PI_USER@$PI_HOST:$PI_DIR/
+echo "Synchronisation du code (app/, challenges/, tools/, *.py, scripts)..."
+# rsync garde la base de scores, les logs, run/ et config.local.json du Pi intacts
+sshpass -p "$PI_PASS" rsync -az --delete \
+    --exclude '.git/' --exclude 'run/' --exclude 'logs/' --exclude '*.db' \
+    --exclude '*.db-wal' --exclude '*.db-shm' --exclude 'config.local.json' \
+    --exclude '__pycache__/' --exclude 'deploy_to_pi.sh' \
+    -e "ssh -o StrictHostKeyChecking=no" \
+    ./ $PI_USER@$PI_HOST:$PI_DIR/
 
 echo "Copie des scripts WiFi hotspot..."
 sshpass -p "$PI_PASS" scp -o StrictHostKeyChecking=no \

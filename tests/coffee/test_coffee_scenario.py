@@ -207,18 +207,26 @@ class TestCoffeeRunner(unittest.TestCase):
         runner.run()
         self.assertEqual(lcd.screens[0], (">Stage1:iButton✓", "U/D SEL=Go 10/30"))
 
-    def test_celebration_only_when_really_complete(self):
-        # Regression: Stage 3 used to print "COMPLETE! 30/30" unconditionally.
+    def test_sequential_lock(self):
         pm3 = FakePM3({40: encode(6000, 40)})
-        runner, lcd, _ = make_runner(SCENARIO, config=CFG, pm3=pm3, script=[D, D, S, S, B, B])
-        self.assertEqual(runner.run(), 10)
-        self.assertFalse(lcd.saw("COFFEE MODULE"))
+        runner, lcd, db = make_runner(SCENARIO, config=CFG, pm3=pm3, script=[D, D, S, B])
+        self.assertEqual(runner.run(), 0)
+        self.assertTrue(lcd.saw("Solve stage 2"))
+        self.assertEqual(lcd.screens[2][0], ">Stage3:Refill🔒")
+        self.assertEqual(pm3.reads, [])
 
+    def test_lock_can_be_disabled_in_config(self):
+        runner, lcd, _ = make_runner(SCENARIO, config=dict(CFG, sequential=False),
+                                     pm3=FakePM3({40: encode(6000, 40)}), script=[D, D, S, S, B, B])
+        self.assertEqual(runner.run(), 10)
+        self.assertFalse(lcd.saw("COFFEE MODULE"))  # 10/30 is not "complete"
+
+    def test_celebration_when_really_complete(self):
         runner, lcd, db = make_runner(SCENARIO, config=CFG, pm3=FakePM3({40: encode(6000, 40)}),
                                       script=[D, D, S, S, B, B])
         db.mark_completed(16, 1)
         db.mark_completed(17, 1)
-        runner.run()
+        self.assertEqual(runner.run(), 10)
         self.assertTrue(lcd.saw("COFFEE MODULE"))
         self.assertTrue(runner.sse.of("scenario_complete"))
 

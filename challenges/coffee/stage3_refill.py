@@ -27,6 +27,10 @@ class Stage3(Stage):
     description = "Forge value block >=50 EUR"
     requires = "proxmark"
     config_keys = ("master_key_b_hex", "credit_threshold_cents", "value_block_addr")
+    hints = (
+        "Credit is a MIFARE value block in block 40: value, ~value, value, addr, ~addr, addr, ~addr.",
+        "Compare the 1,50 and 50,00 EUR badges (Prep Badges): value = cents, little-endian.",
+    )
 
     @classmethod
     def defaults(cls):
@@ -108,6 +112,6 @@ class Stage3(Stage):
                 continue
 
             points = self.award()
-            self.ui.show("TOPPED UP! +10pt", f"{eur(value)} EUR OK!", hold=3)
+            self.ui.show(f"TOPPED UP! +{points}pt", f"{eur(value)} EUR OK!", hold=3)
             self.finish("Congratulations!")
             return points

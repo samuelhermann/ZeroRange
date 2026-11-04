@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from app.catalog import CLASSIC_MODULES, build_catalog
+from app.catalog import build_catalog
 from app.core.config import load_config, lookup
 from app.core.paths import resolve
 from app.scenarios.base import KNOWN_DEVICES, ScenarioDef, Stage, Tool
@@ -52,6 +52,9 @@ def validate_scenario(sc: ScenarioDef, config: Dict[str, Any]) -> List[Issue]:
     _check_len(issues, where, "complete_lines[0]", sc.complete_lines[0], LCD)
     _check_len(issues, where, "complete_lines[1]", sc.complete_lines[1], LCD - 6)
 
+    if sc.secrets is not None and not callable(sc.secrets):
+        issues.append(Issue("error", where, "secrets must be callable(rng, config, out_dir)"))
+
     numbers = [getattr(s, "number", 0) for s in sc.stages]
     if sorted(numbers) != list(range(1, len(sc.stages) + 1)):
         issues.append(Issue("error", where,
@@ -73,6 +76,9 @@ def validate_scenario(sc: ScenarioDef, config: Dict[str, Any]) -> List[Issue]:
             issues.append(Issue("error", sw, f"requires {step.requires!r}; "
                                              f"known devices: {', '.join(KNOWN_DEVICES)}"))
         if is_stage:
+            for i, hint in enumerate(step.hints):
+                if not isinstance(hint, str) or not hint.strip():
+                    issues.append(Issue("error", sw, f"hint #{i + 1} is empty"))
             if not isinstance(step.challenge_id, int) or step.challenge_id <= 0:
                 issues.append(Issue("error", sw, "challenge_id must be a positive int"))
             if step.points <= 0:
@@ -106,7 +112,7 @@ def validate_all(registry: Optional[Registry] = None,
     issues: List[Issue] = [Issue("error", f"scenario {k}", f"failed to load: {e}")
                            for k, e in registry.errors.items()]
 
-    owners: Dict[int, str] = {c.id: f"classic {m.key}" for m in CLASSIC_MODULES for c in m.challenges}
+    owners: Dict[int, str] = {}
     for sc in registry:
         for stage in sc.stages:
             cid = getattr(stage, "challenge_id", None)
@@ -118,7 +124,7 @@ def validate_all(registry: Optional[Registry] = None,
                 owners[cid] = label
         issues.extend(validate_scenario(sc, config))
 
-    titles = [m.title for m in CLASSIC_MODULES] + [s.title for s in registry]
+    titles = [s.title for s in registry]
     dupes = {t for t in titles if titles.count(t) > 1}
     for t in sorted(dupes):
         issues.append(Issue("error", "main menu", f"duplicate title {t!r}"))

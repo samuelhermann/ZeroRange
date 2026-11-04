@@ -18,29 +18,37 @@ from flask import Blueprint, Response, jsonify, render_template, stream_with_con
 from jinja2 import TemplateNotFound
 
 from app.core.events import EventBus, channel_path, sse_stream
-from app.core.paths import DB_PATH, EVENTS_DIR
+from app.core.paths import EVENTS_DIR, active_db_path
 from app.scenarios.base import ScenarioDef
+from database import Database
 
 
-def read_progress(scenario: ScenarioDef, db_path: Path = DB_PATH) -> Dict[str, Any]:
-    """Scenario metadata + completion flags (read-only DB access)."""
+def read_progress(scenario: ScenarioDef, db_path: Optional[Path] = None) -> Dict[str, Any]:
+    """Scenario metadata + the active player's progress."""
+    db_path = Path(db_path or active_db_path())
     data = scenario.to_public_dict()
-    completed: Dict[int, bool] = {}
+    statuses: Dict[int, Dict[str, Any]] = {}
+    player = None
     if Path(db_path).is_file():
         try:
-            with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2) as conn:
-                ids = [s["challenge_id"] for s in data["stages"]]
-                marks = ",".join("?" * len(ids))
-                for cid, done in conn.execute(
-                        f"SELECT id, completed FROM challenges WHERE id IN ({marks})", ids):
-                    completed[cid] = bool(done)
+            db = Database(str(db_path))
+            try:
+                player = db.get_active_player()["name"]
+                for stage in data["stages"]:
+                    statuses[stage["challenge_id"]] = db.get_challenge_status(stage["challenge_id"]) or {}
+            finally:
+                db.close()
         except sqlite3.Error:
             pass
     score = 0
     for stage in data["stages"]:
-        stage["completed"] = completed.get(stage["challenge_id"], False)
-        score += stage["points"] if stage["completed"] else 0
+        status = statuses.get(stage["challenge_id"], {})
+        stage["completed"] = bool(status.get("completed"))
+        stage["earned"] = int(status.get("earned", 0))
+        stage["hints_used"] = int(status.get("hints_used", 0))
+        score += stage["earned"]
     data["score"] = score
+    data["player"] = player
     return data
 
 
@@ -74,6 +82,6 @@ def make_scenario_blueprint(scenario: ScenarioDef, *, events_dir: Optional[Path]
 
     @bp.route("/api/status")
     def status():
-        return jsonify(read_progress(scenario, db_path or DB_PATH))
+        return jsonify(read_progress(scenario, db_path))
 
     return bp

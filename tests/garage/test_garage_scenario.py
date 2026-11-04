@@ -50,13 +50,24 @@ class TestStage1Rolling(unittest.TestCase):
         self.assertEqual([e["accepted"] for e in replays], [True, False, True])
         self.assertIn({"stage": 1, "status": "success", "points": 10}, events)
 
-    def test_skipping_1b_persists_nothing(self):
+    def test_1a_alone_gives_3_partial_points(self):
         stage, lcd, db, events = self.make([S, B])
         self.assertEqual(stage.run(), 0)
-        self.assertFalse(completed(db, 19))
+        status = db.get_challenge_status(19)
+        self.assertFalse(status["completed"])
+        self.assertEqual(status["earned"], 3)
         self.assertTrue(events.of("substage_complete"))
         # The web page must not mark stage 1 as solved after 1a only.
         self.assertFalse(events.of("stage_complete"))
+
+    def test_resume_at_1b(self):
+        stage, _, db, _ = self.make([S, B])
+        stage.run()
+        # Second visit: "1a already done" SEL -> straight to 1b -> BACK leaves summary
+        stage, lcd, db, events = self.make([S, B], db=db)
+        self.assertEqual(stage.run(), 10)
+        self.assertFalse(lcd.saw("Replay rejected"))
+        self.assertEqual(db.get_challenge_status(19)["earned"], 10)
 
     def test_back_at_1a_confirmation(self):
         stage, _, db, _ = self.make([B])

@@ -135,7 +135,8 @@ class ProxmarkHandler:
         else:
             card_info['type'] = "Unknown"
 
-        if card_info:
+        # "type" is always set, so only a UID proves a card is really there
+        if card_info.get('uid'):
             logger.info(f"Carte NFC détectée: {card_info}")
             return card_info
 

@@ -1,44 +1,5 @@
 {
   "version": "1.0",
-  "modules": {
-    "ibutton": {
-      "enabled": true,
-      "challenges": [
-        {
-          "id": 1,
-          "name": "Touch & Read",
-          "description": "Detect any iButton",
-          "points": 10,
-          "timeout": 60,
-          "difficulty": 1
-        },
-        {
-          "id": 2,
-          "name": "Clone iButton",
-          "description": "Read then emulate",
-          "points": 15,
-          "timeout": 90,
-          "difficulty": 2
-        },
-        {
-          "id": 3,
-          "name": "Emulate Specific",
-          "description": "Create custom ID",
-          "points": 15,
-          "timeout": 120,
-          "difficulty": 3
-        }
-      ]
-    },
-    "nfc": {
-      "enabled": false,
-      "note": "NFC challenges coming in Phase 2"
-    },
-    "rfid": {
-      "enabled": false,
-      "note": "RFID challenges coming in Phase 2"
-    }
-  },
   "garage": {
     "rolling": {
       "device_id_hex": "DE AD BE EF",

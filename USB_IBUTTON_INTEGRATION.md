@@ -1,5 +1,11 @@
 # Intégration lecteur iButton USB - ZeroRange
 
+> **Historical note (v1.2):** the `*_handler.py` challenge files described below were
+> replaced by scenario stages in `challenges/<module>/stages.py`; the hardware drivers
+> (`proxmark_handler.py`, `ibutton_usb_reader.py`) are unchanged.
+> See [docs/SCENARIO_GUIDE.md](docs/SCENARIO_GUIDE.md).
+
+
 ## Résumé
 
 Migration complète de l'interface GPIO 1-Wire vers lecteur USB HID pour les challenges iButton.

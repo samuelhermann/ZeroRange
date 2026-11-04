@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Trainer dashboard | ZeroRange</title>
+<style>
+:root { --bg:#0e0e0e; --fg:#f4f1ec; --accent:#ff6a00; --green:#39d353; --red:#f85149; --dim:#888; --line:#2a2a2a; }
+* { box-sizing:border-box; }
+body { background:var(--bg); color:var(--fg); font-family:monospace; margin:0; padding:1.5rem; }
+h1 { color:var(--accent); font-size:1.3rem; letter-spacing:.08em; margin:0 0 .3rem; }
+h2 { font-size:1rem; color:var(--accent); margin:2rem 0 .8rem; }
+p.sub { color:var(--dim); margin:0; font-size:.8rem; }
+.wrap { max-width:960px; }
+.table-scroll { overflow-x:auto; }
+table { width:100%; border-collapse:collapse; font-size:.85rem; }
+th, td { text-align:left; padding:.45rem .5rem; border-bottom:1px solid var(--line); white-space:nowrap; }
+th { color:var(--dim); font-weight:normal; }
+tr.active td:first-child::after { content:" ▶ playing"; color:var(--green); }
+.num { text-align:right; font-variant-numeric:tabular-nums; }
+form { display:inline; margin:0; }
+input[type=text] { background:#161616; color:var(--fg); border:1px solid #333; padding:.3rem .4rem; font:inherit; width:9rem; }
+button, a.btn { background:#1a1a1a; color:var(--fg); border:1px solid #444; padding:.3rem .6rem; font:inherit; font-size:.8rem; cursor:pointer; text-decoration:none; border-radius:3px; }
+button:hover, a.btn:hover { border-color:var(--accent); }
+button.danger:hover { border-color:var(--red); color:var(--red); }
+.panel { border:1px solid var(--line); border-radius:6px; padding:1rem; margin-top:.5rem; }
+pre { background:#111; padding:.8rem; overflow-x:auto; font-size:.8rem; border-radius:4px; }
+.grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:1rem; }
+label { display:block; font-size:.75rem; color:var(--dim); margin:.4rem 0 .2rem; }
+select { background:#161616; color:var(--fg); border:1px solid #333; padding:.3rem; font:inherit; }
+a { color:var(--accent); }
+.bar { height:4px; background:#222; border-radius:2px; min-width:80px; }
+.bar span { display:block; height:4px; background:var(--green); border-radius:2px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>ZeroRange — trainer dashboard</h1>
+<p class="sub">Logged in as {{ user }} · <a href="/">learner pages</a></p>
+
+<h2>Leaderboard</h2>
+<div class="table-scroll">
+<table>
+  <tr><th>#</th><th>Player</th><th class="num">Score</th><th>Progress</th><th class="num">Solved</th>
+      <th class="num">Time</th><th class="num">Hints</th><th>Last solve</th><th>Actions</th></tr>
+  {% for p in board %}
+  <tr class="{{ 'active' if p.player_id == active else '' }}">
+    <td>{{ p.rank }}</td>
+    <td>{{ p.name }}</td>
+    <td class="num">{{ p.score }}/{{ max_score }}</td>
+    <td><div class="bar"><span style="width:{{ (100 * p.score / max_score) | round(0) if max_score else 0 }}%"></span></div></td>
+    <td class="num">{{ p.completed }}</td>
+    <td class="num">{{ (p.total_time // 60) }}m{{ '%02d' % (p.total_time % 60) }}</td>
+    <td class="num">{{ p.hints_used }}</td>
+    <td>{{ p.last_solved or '—' }}</td>
+    <td>
+      {% if p.player_id != active %}
+      <form method="post" action="{{ url_for('dashboard.player_action', player_id=p.player_id, action='activate') }}">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><button>Play</button></form>
+      {% endif %}
+      <form method="post" action="{{ url_for('dashboard.player_action', player_id=p.player_id, action='rename') }}">
+        <input type="hidden" name="csrf" value="{{ csrf }}">
+        <input type="text" name="name" placeholder="rename" aria-label="New name"><button>OK</button></form>
+      <a class="btn" href="{{ url_for('dashboard.certificate', player_id=p.player_id) }}">Certificate</a>
+      <form method="post" action="{{ url_for('dashboard.player_action', player_id=p.player_id, action='reset') }}"
+            onsubmit="return confirm('Reset all progress of {{ p.name }}?')">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><button class="danger">Reset</button></form>
+      {% if board|length > 1 %}
+      <form method="post" action="{{ url_for('dashboard.player_action', player_id=p.player_id, action='delete') }}"
+            onsubmit="return confirm('Delete {{ p.name }} and their history?')">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><button class="danger">Delete</button></form>
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+</div>
+<p>
+  <form method="post" action="{{ url_for('dashboard.add_player') }}">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="text" name="name" placeholder="New player name" aria-label="New player name">
+    <label style="display:inline"><input type="checkbox" name="activate" value="1" checked> play now</label>
+    <button>Add player</button>
+  </form>
+  <a class="btn" href="{{ url_for('dashboard.export_csv') }}">Export CSV</a>
+</p>
+
+<h2>Training session</h2>
+<div class="panel">
+  {% if session %}
+    <p>Session <b>{{ session.id }}</b> started {{ session.created }}. Secrets (answers) for this group:</p>
+    <pre>{{ session | session_summary }}</pre>
+    {% if files %}
+    <p>Generated files to hand out:
+      {% for f in files %}<a class="btn" href="{{ url_for('dashboard.session_file', name=f) }}">{{ f }}</a> {% endfor %}
+    </p>
+    {% endif %}
+  {% else %}
+    <p>No session: the static secrets of config.json are in use.</p>
+  {% endif %}
+  <form method="post" action="{{ url_for('dashboard.session_action', action='new') }}"
+        onsubmit="return confirm('Generate new keys, UIDs and badges for every scenario?')">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label style="display:inline"><input type="checkbox" name="reset_scores" value="1"> also reset all scores</label>
+    <button>New session</button>
+  </form>
+  {% if session %}
+  <form method="post" action="{{ url_for('dashboard.session_action', action='clear') }}">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><button class="danger">Back to static secrets</button></form>
+  {% endif %}
+  <p class="sub">Physical tokens (Coffee technician iButton, Garage fob) keep the UIDs set in config.json.</p>
+</div>
+
+{% if sim %}
+<h2>Simulator (zerorange.py --sim)</h2>
+<div class="grid">
+  <form class="panel" method="post" action="{{ url_for('dashboard.sim_inject') }}">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="ibutton">
+    <b>iButton touch</b><label>UID</label><input type="text" name="uid" value="0100C0FFEE7E11AB">
+    <p><button>Touch reader</button></p>
+  </form>
+  <form class="panel" method="post" action="{{ url_for('dashboard.sim_inject') }}">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="nfc">
+    <b>NFC card on PM3</b><label>UID</label><input type="text" name="uid" value="04A3F5B2">
+    <label>Type</label><select name="type"><option>MIFARE Classic</option><option>NTAG</option><option>MIFARE Ultralight</option></select>
+    <p><button>Present card</button></p>
+  </form>
+  <form class="panel" method="post" action="{{ url_for('dashboard.sim_inject') }}">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="rfid">
+    <b>125 kHz tag on PM3</b><label>ID</label><input type="text" name="id" value="1122334455">
+    <label>Type</label><select name="type"><option>EM410x</option><option>HID Prox</option></select>
+    <p><button>Present tag</button></p>
+  </form>
+  <form class="panel" method="post" action="{{ url_for('dashboard.sim_inject') }}">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="rf">
+    <b>Sub-GHz transmission</b><label>Strength (dBm)</label><input type="text" name="strength" value="-40">
+    <p><button>Transmit</button></p>
+  </form>
+  <form class="panel" method="post" action="{{ url_for('dashboard.sim_inject') }}">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="ir">
+    <b>IR remote</b><label>Key</label><input type="text" name="keycode" value="KEY_POWER">
+    <label>Protocol</label><select name="protocol"><option>NEC</option><option>RC5</option><option>RC6</option><option>Sony</option></select>
+    <p><button>Send</button></p>
+  </form>
+  <form class="panel" method="post" action="{{ url_for('dashboard.sim_inject') }}">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="kind" value="pm3_log">
+    <b>PM3 emulation log line</b><label>Line</label><input type="text" name="line" value="Auth sector 8 key B B4EEC0FFEE11" style="width:100%">
+    <p><button>Append</button></p>
+  </form>
+</div>
+{% endif %}
+
+<h2>Scenarios</h2>
+<p>{% for sc in scenarios %}<a class="btn" href="/scenarios/{{ sc.key }}/">{{ sc.title }}</a> {% endfor %}</p>
+</div>
+</body>
+</html>

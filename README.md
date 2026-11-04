@@ -66,6 +66,7 @@ Navigate through challenges using the 5-button interface:
 | **NFC** | Detect, Clone, MIFARE Attack | 30 pts | Available |
 | **RFID** | Detect, Clone, Simulate | 30 pts | Available |
 | **SubGHZ** | Detect Signal, Record & Replay, Signal Analysis | 30 pts | Available |
+| **IR** | Detect, Capture & Replay, Protocol Analysis | 30 pts | Available (FLIRC) |
 | **Coffee** | Technician Token, Dump & Crack, Top Up | 30 pts | Available |
 | **Garage** | Rolling Code (RollJam), Pedestrian Gate, Tech Room | 30 pts | Available |
 
@@ -82,11 +83,13 @@ python3 tools/validate_scenarios.py
 The new scenario shows up in the LCD menu, the scores database and the web
 companion automatically. See **[docs/SCENARIO_GUIDE.md](docs/SCENARIO_GUIDE.md)**.
 
-### Coming Soon
+### No hardware? Try it in a terminal
 
-| Module | Description | Status |
-|--------|-------------|--------|
-| **IR** | Infrared signal challenges | In Development |
+```bash
+pip3 install -r requirements-dev.txt
+python3 zerorange.py --sim
+python3 tools/sim_inject.py ibutton 0100C0FFEE7E11AB   # in another terminal
+```
 
 ---
 
@@ -246,10 +249,17 @@ For detailed installation instructions, see [INSTALLATION.md](INSTALLATION.md).
 ## Features
 
 - **Gamified Learning** - CTF-style challenges with points and progression
-- **Real Hardware** - Practice on actual RFID/NFC/iButton systems
-- **Score Tracking** - SQLite database tracks your progress
+- **Real Hardware** - Practice on actual RFID/NFC/iButton/Sub-GHz/IR systems
+- **Players & Leaderboard** - per-learner scores, CSV export, printable certificates
+- **Hints** - press ► in any stage; each hint costs a few points
+- **Training sessions** - fresh keys, UIDs and badges for every group (no answer sharing)
+- **Trainer dashboard** - `http://<box>:8080/dashboard/` (login on the LCD: Settings > Web login)
+- **Simulation mode** - `python3 zerorange.py --sim` runs everything without hardware
+- **Scenario framework** - create new scenarios in minutes (`tools/new_scenario.py`)
 - **Auto-start** - Systemd service for standalone operation
 - **WiFi Hotspot** - Connect directly to ZeroRange without network
+
+Guides: [Trainer guide](docs/TRAINER_GUIDE.md) · [Create a scenario](docs/SCENARIO_GUIDE.md)
 
 ---
 
@@ -263,20 +273,19 @@ ZeroRange/
 ├── config.json           # Configuration (overridable by config.local.json)
 │
 ├── app/
-│   ├── catalog.py        # Classic modules table (iButton, NFC, RFID, SubGHZ, IR)
-│   ├── core/             # LCD UI helpers, event bus, HID reader, NFC files, config
+│   ├── catalog.py        # Builds the challenge catalog from the scenarios
+│   ├── core/             # LCD UI helpers, event bus, HID reader, NFC files, sessions, auth
 │   ├── scenarios/        # Scenario framework: Stage, ScenarioDef, runner, registry, validator
-│   └── web/              # Flask web companion (one blueprint per scenario)
-├── challenges/<key>/     # One folder per scenario (coffee, garage, ...)
-├── tools/                # new_scenario.py, validate_scenarios.py
+│   ├── sim/              # --sim mode: terminal LCD + simulated devices
+│   └── web/              # Flask web companion + trainer dashboard
+├── challenges/<key>/     # One folder per module: ibutton, nfc, rfid, subghz, ir, coffee, garage
+├── tools/                # new_scenario.py, validate_scenarios.py, sim_inject.py
 ├── tests/                # pytest suite (no hardware needed)
 │
-├── ibutton_handler.py    # iButton challenge logic
-├── nfc_handler.py        # NFC challenges (Proxmark3)
-├── rfid_handler.py       # RFID challenges (Proxmark3)
-├── proxmark_handler.py   # Proxmark3 interface
-├── subghz_handler.py     # SubGHZ challenges (HackRF)
-├── hackrf_handler.py     # HackRF One interface
+├── proxmark_handler.py   # Proxmark3 driver
+├── hackrf_handler.py     # HackRF One driver
+├── flirc_handler.py      # FLIRC IR receiver driver
+├── ibutton_usb_reader.py # iButton USB HID reader driver
 │
 ├── SUBGHZ_INTEGRATION.md # SubGHZ setup guide
 └── docs/                 # Web documentation

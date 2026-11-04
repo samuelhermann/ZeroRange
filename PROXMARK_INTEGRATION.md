@@ -1,5 +1,11 @@
 # Intégration Proxmark3 - ZeroRange
 
+> **Historical note (v1.2):** the `*_handler.py` challenge files described below were
+> replaced by scenario stages in `challenges/<module>/stages.py`; the hardware drivers
+> (`proxmark_handler.py`, `ibutton_usb_reader.py`) are unchanged.
+> See [docs/SCENARIO_GUIDE.md](docs/SCENARIO_GUIDE.md).
+
+
 ## Résumé
 
 Intégration complète du support Proxmark3 pour les challenges NFC et RFID 125kHz dans ZeroRange.

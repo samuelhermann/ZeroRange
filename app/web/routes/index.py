@@ -32,7 +32,8 @@ _INDEX_TMPL = """<!DOCTYPE html>
 </head>
 <body>
 <h1>ZeroRange</h1>
-<p>Select a training scenario:</p>
+<p>{% if player %}Now playing: <b>{{ player }}</b> · {% endif %}Select a training scenario
+   · <a href="/dashboard/" style="color:var(--accent)">trainer dashboard</a></p>
 <div class="scenarios">
 {% for sc in scenarios %}
   <a class="card" href="/scenarios/{{ sc.key }}/">
@@ -53,7 +54,8 @@ _INDEX_TMPL = """<!DOCTYPE html>
 def index():
     cards = []
     for scenario in current_app.config["ZR_REGISTRY"]:
-        info = read_progress(scenario)
+        info = read_progress(scenario, current_app.config.get("ZR_DB_PATH"))
         info["logo"] = (_STATIC / scenario.key / "logo.svg").is_file()
         cards.append(info)
-    return render_template_string(_INDEX_TMPL, scenarios=cards)
+    player = cards[0]["player"] if cards else None
+    return render_template_string(_INDEX_TMPL, scenarios=cards, player=player)
